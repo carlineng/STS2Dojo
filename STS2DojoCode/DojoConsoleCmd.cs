@@ -4,8 +4,6 @@ using System.Threading.Tasks;
 using MegaCrit.Sts2.Core.DevConsole;
 using MegaCrit.Sts2.Core.DevConsole.ConsoleCommands;
 using MegaCrit.Sts2.Core.Entities.Players;
-using MegaCrit.Sts2.Core.Helpers;
-using MegaCrit.Sts2.Core.Map;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Exceptions;
 using MegaCrit.Sts2.Core.Models.Singleton;
@@ -75,28 +73,14 @@ public class DojoConsoleCmd : AbstractConsoleCmd
                 return;
             }
 
-            // Start clean. Any run currently in memory is torn down; its save file (if it had one) is untouched
-            // because ShouldSave gates writes and we never re-save it here.
-            if (RunManager.Instance.IsInProgress)
-            {
-                RunManager.Instance.CleanUp();
-            }
-
-            // Hardcoded junk context — the reconstructor will produce these for real later. Skip RandomCharacter.
+            // Hardcoded junk context — dojoreplay (STS2DojoCode/DojoReplayConsoleCmd.cs) uses the real
+            // reconstructor instead. Skip RandomCharacter.
             CharacterModel character = ModelDb.AllCharacters.First(c => c.GetType().Name != "RandomCharacter");
-            string seed = SeedHelper.GetRandomSeed();
 
             // §8.0 launch sequence. shouldSave:false is the persistence kill-switch (Q2).
-            RunState runState = await game.StartNewSingleplayerRun(
-                character,
-                shouldSave: false,
-                ActModel.GetDefaultList(),
-                Array.Empty<ModifierModel>(),
-                seed,
-                GameMode.Standard,
-                ascensionLevel: 0);
+            RunState runState = await DojoLaunch.StartThrowawayRun(game, character, ascensionLevel: 0);
 
-            // Mutate Players[0] with a hardcoded junk loadout — this is where reconstructor output will go.
+            // Mutate Players[0] with a hardcoded junk loadout.
             Player player = runState.Players[0];
             player.Gold = 999;
 
@@ -105,7 +89,7 @@ public class DojoConsoleCmd : AbstractConsoleCmd
                 character.Id.Entry + ", gold=999).");
 
             // Jump straight into the fight, bypassing the map. Same entry point the built-in 'fight' command uses.
-            await RunManager.Instance.EnterRoomDebug(encounter.RoomType, MapPointType.Unassigned, encounter);
+            await DojoLaunch.EnterEncounter(encounter);
         }
         catch (Exception e)
         {

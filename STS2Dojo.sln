@@ -2,6 +2,8 @@
 Microsoft Visual Studio Solution File, Format Version 12.00
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "STS2Dojo", "STS2Dojo.csproj", "{43EEFADC-82F2-4783-8B6E-A86242968215}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "STS2Dojo.Tests", "STS2Dojo.Tests\STS2Dojo.Tests.csproj", "{A15B8B1B-36CB-4609-A04B-D22A77B47423}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -15,5 +17,11 @@ Global
 		{43EEFADC-82F2-4783-8B6E-A86242968215}.ExportDebug|Any CPU.Build.0 = ExportDebug|Any CPU
 		{43EEFADC-82F2-4783-8B6E-A86242968215}.ExportRelease|Any CPU.ActiveCfg = ExportRelease|Any CPU
 		{43EEFADC-82F2-4783-8B6E-A86242968215}.ExportRelease|Any CPU.Build.0 = ExportRelease|Any CPU
+		{A15B8B1B-36CB-4609-A04B-D22A77B47423}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A15B8B1B-36CB-4609-A04B-D22A77B47423}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A15B8B1B-36CB-4609-A04B-D22A77B47423}.ExportDebug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A15B8B1B-36CB-4609-A04B-D22A77B47423}.ExportDebug|Any CPU.Build.0 = Debug|Any CPU
+		{A15B8B1B-36CB-4609-A04B-D22A77B47423}.ExportRelease|Any CPU.ActiveCfg = Debug|Any CPU
+		{A15B8B1B-36CB-4609-A04B-D22A77B47423}.ExportRelease|Any CPU.Build.0 = Debug|Any CPU
 	EndGlobalSection
 EndGlobal
