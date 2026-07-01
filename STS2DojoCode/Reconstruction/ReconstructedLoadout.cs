@@ -21,6 +21,8 @@ public readonly record struct ProvenancedCard(SerializableCard Card, Provenance 
 
 public readonly record struct ProvenancedRelic(SerializableRelic Relic, Provenance Provenance);
 
+public readonly record struct ProvenancedPotion(ModelId PotionId, Provenance Provenance);
+
 /// <summary>
 /// The reconstructor's output: player state entering the fight on a given global floor, plus the
 /// encounter to launch. Uses the game's own <see cref="SerializableCard"/>/<see cref="SerializableRelic"/>
@@ -38,6 +40,6 @@ public class ReconstructedLoadout
     public required ModelId EncounterId { get; init; }
     public required List<ModelId> MonsterIds { get; init; }
 
-    /// <summary>Potions entering the fight. v1 ships this always empty (Assumed) — see CLAUDE.md §10.</summary>
-    public static readonly IReadOnlyList<ModelId> Potions = new List<ModelId>();
+    /// <summary>Potions entering the fight. v1 ships this empty (Assumed) — see CLAUDE.md §10.</summary>
+    public List<ProvenancedPotion> Potions { get; init; } = [];
 }

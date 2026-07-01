@@ -1,6 +1,8 @@
 using System.Text.Json;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Runs;
+using MegaCrit.Sts2.Core.Runs.History;
 using MegaCrit.Sts2.Core.Saves.Runs;
 using STS2Dojo.STS2DojoCode.Reconstruction;
 
@@ -135,6 +137,9 @@ TestRunner.Run(
         RequiredCards: ["CARD.ASCENDERS_BANE", "CARD.CLAW", "CARD.GLACIER"],
         RequiredRelics: ["RELIC.CRACKED_CORE", "RELIC.WAR_PAINT"]));
 
+DecisionTestRunner.Run();
+PotionReconstructionAcceptanceRunner.RunIfRequested();
+
 internal sealed record ReconstructorFixture(
     string Name,
     string RunFile,
@@ -252,6 +257,182 @@ internal static class TestRunner
     }
 }
 
+internal static class DecisionTestRunner
+{
+    public static void Run()
+    {
+        Run("combat floor detection", CombatFloorDetection);
+        Run("single-player gate", SinglePlayerGate);
+        Run("content eligibility resolve pass", ContentEligibilityResolvePass);
+        Run("run history file selection", RunHistoryFileSelection);
+        Run("real-profile path construction", RealProfilePathConstruction);
+
+        Console.WriteLine();
+        Console.WriteLine("5 decision-helper test groups passed.");
+    }
+
+    private static void Run(string name, Action test)
+    {
+        test();
+        Console.WriteLine("PASS " + name);
+    }
+
+    private static void CombatFloorDetection()
+    {
+        RunHistory eventCombatRun = LoadRun("1782705511.run");
+        (_, MapPointRoomHistoryEntry eventCombat) = RunHistoryQueries.FindCombatFloor(eventCombatRun, 5);
+        Assert.Equal("ENCOUNTER.FUZZY_WURM_CRAWLER_WEAK", eventCombat.ModelId?.ToString(),
+            "event-combat encounter");
+
+        Assert.True(RunHistoryQueries.IsCombatRoom(new MapPointRoomHistoryEntry { RoomType = RoomType.Monster }),
+            "monster rooms are combat");
+        Assert.True(RunHistoryQueries.IsCombatRoom(new MapPointRoomHistoryEntry { RoomType = RoomType.Elite }),
+            "elite rooms are combat");
+        Assert.True(RunHistoryQueries.IsCombatRoom(new MapPointRoomHistoryEntry { RoomType = RoomType.Boss }),
+            "boss rooms are combat");
+        Assert.True(!RunHistoryQueries.IsCombatRoom(new MapPointRoomHistoryEntry { RoomType = RoomType.Event }),
+            "event rooms are not combat unless represented as monster/elite/boss rooms");
+        Assert.True(!RunHistoryQueries.IsCombatRoom(new MapPointRoomHistoryEntry { RoomType = RoomType.Shop }),
+            "shop rooms are not combat");
+        Assert.Throws<InvalidOperationException>(() => RunHistoryQueries.FindCombatFloor(eventCombatRun, 1),
+            "non-combat floor is rejected");
+    }
+
+    private static void SinglePlayerGate()
+    {
+        RunHistory singlePlayer = LoadRun("1782696823.run");
+        RunHistory multiplayer = LoadRun("1782788638.run");
+
+        Assert.True(RunHistoryQueries.IsSinglePlayer(singlePlayer), "single-player run is accepted");
+        Assert.True(!RunHistoryQueries.IsSinglePlayer(multiplayer), "multiplayer run is rejected");
+
+        StartingLoadout starting = StartingLoadout.ForCharacter("CHARACTER.DEFECT", singlePlayer.Ascension);
+        Assert.Throws<InvalidOperationException>(() => RunReconstructor.Reconstruct(
+                multiplayer, 46, starting.Deck, starting.Relics, starting.Hp, starting.Gold),
+            "reconstructor rejects multiplayer runs before replaying");
+    }
+
+    private static void ContentEligibilityResolvePass()
+    {
+        ReconstructedLoadout loadout = ReconstructFixture("1781906039.run", 2);
+
+        FakeContentResolver allPresent = new();
+        DojoContentEligibilityResult eligible = DojoContentEligibility.Validate(loadout, allPresent);
+        Assert.True(eligible.IsEligible, "all known ids are eligible");
+
+        FakeContentResolver missing = new([
+            ("ENCOUNTER.SEAPUNK_WEAK", DojoContentKind.Encounter),
+            ("MONSTER.SEAPUNK", DojoContentKind.Monster),
+            ("CARD.ASCENDERS_BANE", DojoContentKind.Card),
+            ("RELIC.SILKEN_TRESS", DojoContentKind.Relic)
+        ]);
+        DojoContentEligibilityResult result = DojoContentEligibility.Validate(loadout, missing);
+        Assert.True(!result.IsEligible, "missing ids make loadout ineligible");
+        Assert.SequenceEqual(
+            [
+                "Encounter:ENCOUNTER.SEAPUNK_WEAK",
+                "Monster:MONSTER.SEAPUNK",
+                "Card:CARD.ASCENDERS_BANE",
+                "Relic:RELIC.SILKEN_TRESS"
+            ],
+            result.MissingContent.Select(m => m.Kind + ":" + m.Id).ToArray(),
+            "missing content list");
+    }
+
+    private static void RunHistoryFileSelection()
+    {
+        RunHistory good = LoadRun("1781906039.run");
+        Assert.Equal(RunHistoryFileDecision.Include,
+            RunHistoryFileSelector.Classify(new RunHistoryFileCandidate("1781906039.run", good)).Decision,
+            "good run is included");
+
+        Assert.Equal(RunHistoryFileDecision.NotRunFile,
+            RunHistoryFileSelector.Classify(new RunHistoryFileCandidate("notes.txt", good)).Decision,
+            "non-run files are skipped");
+        Assert.Equal(RunHistoryFileDecision.LoadFailed,
+            RunHistoryFileSelector.Classify(new RunHistoryFileCandidate("broken.run", LoadError: new JsonException())).Decision,
+            "load failures are skipped");
+
+        RunHistory unsupportedSchema = LoadRun("1781906039.run");
+        unsupportedSchema.SchemaVersion = 99;
+        Assert.Equal(RunHistoryFileDecision.UnsupportedSchema,
+            RunHistoryFileSelector.Classify(new RunHistoryFileCandidate("unsupported.run", unsupportedSchema)).Decision,
+            "unsupported schema is skipped");
+
+        RunHistory multiplayer = LoadRun("1782788638.run");
+        Assert.Equal(RunHistoryFileDecision.Multiplayer,
+            RunHistoryFileSelector.Classify(new RunHistoryFileCandidate("multiplayer.run", multiplayer)).Decision,
+            "multiplayer run is skipped");
+
+        RunHistory modifierRun = LoadRun("1781906039.run");
+        modifierRun.Modifiers.Add(new object());
+        Assert.Equal(RunHistoryFileDecision.ModifierRun,
+            RunHistoryFileSelector.Classify(new RunHistoryFileCandidate("modifier.run", modifierRun)).Decision,
+            "modifier run is skipped by default");
+        Assert.Equal(RunHistoryFileDecision.Include,
+            RunHistoryFileSelector.Classify(
+                new RunHistoryFileCandidate("modifier.run", modifierRun),
+                new RunHistoryFileSelectionOptions { ExcludeModifierRuns = false }).Decision,
+            "modifier run can be included by option");
+
+        RunHistory noCombat = SyntheticRun(RoomType.Event);
+        Assert.Equal(RunHistoryFileDecision.NoCombatFloors,
+            RunHistoryFileSelector.Classify(new RunHistoryFileCandidate("no-combat.run", noCombat)).Decision,
+            "run with no combat floors is skipped");
+    }
+
+    private static void RealProfilePathConstruction()
+    {
+        Assert.Equal("user://steam/76561198000000000/profile1",
+            RealProfilePath.BuildProfileBasePath("76561198000000000", 1),
+            "real profile base path");
+        Assert.Equal("user://steam/76561198000000000/profile1/saves/history",
+            RealProfilePath.BuildHistoryPath("76561198000000000", 1),
+            "real history path");
+        Assert.Equal("user://steam/76561198000000000/profile2/saves/history",
+            RealProfilePath.BuildHistoryPathFromProfileBasePath("user://steam/76561198000000000/modded/profile2"),
+            "modded profile path is converted to real profile history path");
+        Assert.Throws<ArgumentOutOfRangeException>(() => RealProfilePath.BuildHistoryPath("76561198000000000", 0),
+            "profile number is 1-based");
+        Assert.Throws<ArgumentException>(() => RealProfilePath.BuildHistoryPath("bad/id", 1),
+            "steam id rejects path separators");
+    }
+
+    private static ReconstructedLoadout ReconstructFixture(string runFile, int floor)
+    {
+        RunHistory run = LoadRun(runFile);
+        StartingLoadout starting = StartingLoadout.ForCharacter(run.Players.Single().Character.ToString(), run.Ascension);
+        return RunReconstructor.Reconstruct(run, floor, starting.Deck, starting.Relics, starting.Hp, starting.Gold);
+    }
+
+    private static RunHistory LoadRun(string runFile) =>
+        TestRunHistoryLoader.Load(Path.Combine(TestRunner.FindRepoRoot(), "runfiles", runFile));
+
+    private static RunHistory SyntheticRun(RoomType roomType) => new()
+    {
+        SchemaVersion = 9,
+        Players = [new RunHistoryPlayer { Id = 1, Character = ModelId.Deserialize("CHARACTER.SILENT") }],
+        MapPointHistory =
+        [
+            [
+                new MapPointHistoryEntry
+                {
+                    Rooms = [new MapPointRoomHistoryEntry { RoomType = roomType }],
+                    PlayerStats = [new PlayerMapPointHistoryEntry { PlayerId = 1, CurrentHp = 70, MaxHp = 70 }]
+                }
+            ]
+        ]
+    };
+}
+
+internal sealed class FakeContentResolver(HashSet<(string Id, DojoContentKind Kind)>? missing = null)
+    : IDojoContentResolver
+{
+    private readonly HashSet<(string Id, DojoContentKind Kind)> _missing = missing ?? [];
+
+    public bool CanResolve(ModelId id, DojoContentKind kind) => !_missing.Contains((id.ToString(), kind));
+}
+
 internal sealed record StartingLoadout(
     IReadOnlyList<SerializableCard> Deck,
     IReadOnlyList<SerializableRelic> Relics,
@@ -354,6 +535,25 @@ internal static class Assert
         {
             throw new TestFailureException(label);
         }
+    }
+
+    public static void Throws<TException>(Action action, string label)
+        where TException : Exception
+    {
+        try
+        {
+            action();
+        }
+        catch (TException)
+        {
+            return;
+        }
+        catch (Exception e)
+        {
+            throw new TestFailureException($"{label}: expected {typeof(TException).Name}, got {e.GetType().Name}");
+        }
+
+        throw new TestFailureException(label + ": expected " + typeof(TException).Name);
     }
 }
 

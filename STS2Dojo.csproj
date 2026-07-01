@@ -43,10 +43,14 @@
 
     <ItemGroup>
         <Compile Remove="STS2Dojo/**"/>
+        <Compile Remove="STS2Dojo.Tests/**"/>
+        <Compile Remove=".godot/**"/>
         <Compile Remove="materials/**"/>
         <Compile Remove="shaders/**"/>
         <Compile Remove="images/**"/>
         <EmbeddedResource Remove="STS2Dojo/**"/>
+        <EmbeddedResource Remove="STS2Dojo.Tests/**"/>
+        <EmbeddedResource Remove=".godot/**"/>
         <EmbeddedResource Remove="materials/**"/>
         <EmbeddedResource Remove="shaders/**"/>
         <EmbeddedResource Remove="images/**"/>
@@ -58,6 +62,8 @@
         <None Include="STS2Dojo.json"/>
         <None Include="project.godot"/>
         <None Include="STS2Dojo/**"/>
+        <None Remove="STS2Dojo.Tests/**"/>
+        <None Remove=".godot/**"/>
     </ItemGroup>
 
     <Target Name="CheckDependencyPaths">

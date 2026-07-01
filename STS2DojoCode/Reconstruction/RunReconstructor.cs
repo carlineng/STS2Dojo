@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using MegaCrit.Sts2.Core.Models;
-using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Runs.History;
 using MegaCrit.Sts2.Core.Saves.Runs;
@@ -23,22 +22,8 @@ public static class RunReconstructor
     /// this to resolve/validate the encounter before doing the (heavier, live-game-dependent) full
     /// reconstruction.</summary>
     public static (MapPointHistoryEntry Floor, MapPointRoomHistoryEntry CombatRoom) FindCombatFloor(
-        RunHistory run, int globalFloor)
-    {
-        List<MapPointHistoryEntry> floors = run.MapPointHistory.SelectMany(act => act).ToList();
-        if (globalFloor < 1 || globalFloor > floors.Count)
-        {
-            throw new ArgumentOutOfRangeException(nameof(globalFloor),
-                $"Run has {floors.Count} floors; floor {globalFloor} is out of range.");
-        }
-
-        MapPointHistoryEntry targetFloor = floors[globalFloor - 1];
-        MapPointRoomHistoryEntry combatRoom = targetFloor.Rooms.FirstOrDefault(IsCombatRoom)
-            ?? throw new InvalidOperationException(
-                $"Floor {globalFloor} has no combat room (room types present: " +
-                $"{string.Join(", ", targetFloor.Rooms.Select(r => r.RoomType))}).");
-        return (targetFloor, combatRoom);
-    }
+        RunHistory run, int globalFloor) =>
+        RunHistoryQueries.FindCombatFloor(run, globalFloor);
 
     /// <summary>
     /// Reconstructs the loadout entering the fight on <paramref name="globalFloor"/>. The starting
@@ -56,14 +41,14 @@ public static class RunReconstructor
         int startingGold,
         ulong playerId = 1)
     {
-        RunHistoryPlayer finalPlayer = run.Players.Single();
-        if (finalPlayer.Id != playerId)
+        if (!RunHistoryQueries.IsSinglePlayer(run, playerId))
         {
             throw new InvalidOperationException(
-                $"Only single-player runs are supported (CLAUDE.md §6); expected player id {playerId}, found {finalPlayer.Id}.");
+                $"Only single-player runs are supported (CLAUDE.md §6); expected exactly one player with id {playerId}.");
         }
 
-        List<MapPointHistoryEntry> floors = run.MapPointHistory.SelectMany(act => act).ToList();
+        RunHistoryPlayer finalPlayer = run.Players.Single();
+        IReadOnlyList<MapPointHistoryEntry> floors = RunHistoryQueries.FlattenFloors(run);
         (_, MapPointRoomHistoryEntry combatRoom) = FindCombatFloor(run, globalFloor);
         ModelId encounterId = combatRoom.ModelId
             ?? throw new InvalidOperationException($"Floor {globalFloor}'s combat room is missing model_id.");
@@ -158,9 +143,6 @@ public static class RunReconstructor
             MonsterIds = combatRoom.MonsterIds.ToList()
         };
     }
-
-    private static bool IsCombatRoom(MapPointRoomHistoryEntry room) =>
-        room.RoomType is RoomType.Monster or RoomType.Elite or RoomType.Boss;
 
     /// <summary>
     /// Copies a card, defaulting FloorAddedToDeck to the floor it was gained on when the source delta

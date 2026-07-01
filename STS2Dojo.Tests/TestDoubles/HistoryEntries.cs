@@ -63,6 +63,18 @@ public sealed class PlayerMapPointHistoryEntry
 
     [JsonPropertyName("relics_removed")]
     public List<ModelId> RelicsRemoved { get; set; } = [];
+
+    [JsonPropertyName("potion_choices")]
+    public List<ModelChoiceHistoryEntry> PotionChoices { get; set; } = [];
+
+    [JsonPropertyName("bought_potions")]
+    public List<ModelId> BoughtPotions { get; set; } = [];
+
+    [JsonPropertyName("potion_used")]
+    public List<ModelId> PotionUsed { get; set; } = [];
+
+    [JsonPropertyName("potion_discarded")]
+    public List<ModelId> PotionDiscarded { get; set; } = [];
 }
 
 public sealed class CardTransformationHistoryEntry
