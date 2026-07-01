@@ -55,14 +55,12 @@ public class DojoConsoleCmd : AbstractConsoleCmd
             return new CmdResult(success: false, "Encounter '" + encounterId.Entry + "' not found.");
         }
 
-        encounter.DebugRandomizeRng();
-
-        Task task = LaunchDojoFight(encounter);
+        Task task = LaunchDojoFight(encounter.Id);
         return new CmdResult(task, success: true,
             "Dojo: throwaway non-saving run -> '" + encounter.Id.Entry + "'. Save dir should be byte-identical after win OR loss.");
     }
 
-    private static async Task LaunchDojoFight(EncounterModel encounter)
+    private static async Task LaunchDojoFight(ModelId encounterId)
     {
         try
         {
@@ -77,19 +75,16 @@ public class DojoConsoleCmd : AbstractConsoleCmd
             // reconstructor instead. Skip RandomCharacter.
             CharacterModel character = ModelDb.AllCharacters.First(c => c.GetType().Name != "RandomCharacter");
 
-            // §8.0 launch sequence. shouldSave:false is the persistence kill-switch (Q2).
-            RunState runState = await DojoLaunch.StartThrowawayRun(game, character, ascensionLevel: 0);
-
-            // Mutate Players[0] with a hardcoded junk loadout.
-            Player player = runState.Players[0];
-            player.Gold = 999;
-
             MainFile.Logger.Info(
-                "[STS2Dojo] Launching '" + encounter.Id.Entry + "' (shouldSave=false, character=" +
+                "[STS2Dojo] Launching '" + encounterId.Entry + "' (shouldSave=false, character=" +
                 character.Id.Entry + ", gold=999).");
 
-            // Jump straight into the fight, bypassing the map. Same entry point the built-in 'fight' command uses.
-            await DojoLaunch.EnterEncounter(encounter);
+            // §8.0 launch sequence. shouldSave:false is the persistence kill-switch (Q2). The mutate
+            // callback runs before the run's scene is created — see DojoLaunch.cs's class docs.
+            await DojoLaunch.LaunchThrowawayRun(game, character, ascensionLevel: 0, encounterId, mutate: runState =>
+            {
+                runState.Players[0].Gold = 999;
+            });
         }
         catch (Exception e)
         {
