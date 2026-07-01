@@ -1,0 +1,25 @@
+# .NET / MSBuild
+bin/
+obj/
+/packages/
+*.user
+
+# Per-machine path overrides (see Directory.Build.props)
+/local.props
+
+# Rider / ReSharper
+.idea/
+*.iml
+riderModule.iml
+/_ReSharper.Caches/
+
+# Godot editor cache (regenerated on open; includes the mono nuget/obj tree)
+.godot/
+
+# Godot export output (built .pck lands under mods/, not here, but ignore if ever exported locally)
+/export/
+*.pck
+
+# OS cruft
+.DS_Store
+Thumbs.db
