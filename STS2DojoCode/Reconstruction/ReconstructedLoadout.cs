@@ -40,6 +40,11 @@ public class ReconstructedLoadout
     public required ModelId EncounterId { get; init; }
     public required List<ModelId> MonsterIds { get; init; }
 
-    /// <summary>Potions entering the fight. v1 ships this empty (Assumed) — see CLAUDE.md §10.</summary>
+    /// <summary>Potions entering the fight (see CLAUDE.md §5d).</summary>
     public List<ProvenancedPotion> Potions { get; init; } = [];
+
+    /// <summary>Max potion slots entering the fight: base 3, minus 1 under Ascension's Tight Belt
+    /// (ascension >= 4), plus any one-time bonus from Potion Belt/Alchemical Coffer/Phial Holster picked
+    /// up along the way (see RunReconstructor.PotionSlotGrantingRelics).</summary>
+    public required int MaxPotionSlots { get; init; }
 }
