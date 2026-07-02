@@ -47,6 +47,12 @@ public static class DojoMainMenuPatch
         }
 
         container.AddChildSafely(dojoButton);
+
+        // AddChildSafely appends at the end (after Quit); move it to sit right before Settings (i.e.
+        // between Multiplayer/Timeline and Settings) instead. template IS the SettingsButton node, so its
+        // current index is exactly the target slot.
+        container.MoveChild(dojoButton, template.GetIndex());
+
         dojoButton.Visible = true;
         dojoButton.Enable();
 
