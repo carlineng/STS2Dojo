@@ -94,20 +94,34 @@ public static class DojoLaunch
 
         DojoRunRegistry.MarkAsDojo(runState);
 
-        using (new NetLoadingHandle(RunManager.Instance.NetService))
+        try
         {
-            await PreloadManager.LoadRunAssets(runState.Players.Select(p => p.Character));
-            await PreloadManager.LoadActAssets(runState.Acts[0]);
-            await RunManager.Instance.FinalizeStartingRelics();
-            RunManager.Instance.Launch();
+            using (new NetLoadingHandle(RunManager.Instance.NetService))
+            {
+                await PreloadManager.LoadRunAssets(runState.Players.Select(p => p.Character));
+                await PreloadManager.LoadActAssets(runState.Acts[0]);
+                await RunManager.Instance.FinalizeStartingRelics();
+                RunManager.Instance.Launch();
 
-            mutate(runState);
+                mutate(runState);
 
-            game.RootSceneContainer.SetCurrentScene(NRun.Create(runState));
+                game.RootSceneContainer.SetCurrentScene(NRun.Create(runState));
+            }
+
+            await EnterEncounter(encounter);
+            return runState;
         }
-
-        await EnterEncounter(encounter);
-        return runState;
+        catch
+        {
+            // mutate(...) (e.g. RunReconstructor content resolution) or the asset/scene setup above can
+            // throw with a live, never-entered RunState already installed via SetUpNewSingleplayer. Left
+            // in place, RunManager.State stays occupied: RunManager.SetUpNewSingleplayer throws
+            // "State is already set." for ANY subsequent run — Dojo or a real player run — until
+            // something else happens to call CleanUp() first. Recover immediately rather than leaving the
+            // session poisoned; the caller's own catch block still logs the original exception.
+            RunManager.Instance.CleanUp();
+            throw;
+        }
     }
 
     public static async Task EnterEncounter(EncounterModel encounter)
