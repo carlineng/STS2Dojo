@@ -12,8 +12,20 @@ namespace STS2Dojo.STS2DojoCode;
 /// resolve their history directory from the LIVE value of <c>UserDataPathProvider.IsRunningModded</c> on
 /// every call — re-read on every button press, not cached — so flipping it to <c>false</c> for the duration
 /// the screen is open redirects it to the real profile's <c>.run</c> files with no patch needed on
-/// <c>SaveManager</c>/<c>NRunHistory</c> itself. The flag is restored the moment the screen is actually
-/// popped off the submenu stack — see <see cref="DojoRunHistoryFlagRestorePatch"/> below.
+/// <c>SaveManager</c>/<c>NRunHistory</c> itself. The flag is restored via two independent hooks, because
+/// there are two independent ways the screen stops being open:
+/// <list type="bullet">
+/// <item>Backing out of the screen pops it off the submenu stack, firing <c>NSubmenu.OnSubmenuClosed</c> —
+/// see <see cref="DojoRunHistoryFlagRestorePatch"/>.</item>
+/// <item>Confirming a floor launches straight into the fight, which replaces the main menu scene entirely
+/// via <c>NSceneContainer.SetCurrentScene</c> (it frees the old scene's children directly — see
+/// <c>NSceneContainer.SetCurrentScene</c> in the decompiled source) WITHOUT ever popping the submenu stack
+/// first, so <c>OnSubmenuClosed</c> never fires on this path. Without the second hook below, every
+/// successful replay launch would permanently leave the whole modded session reading/writing the real
+/// profile. See <see cref="DojoRunHistorySceneSwapRestorePatch"/>.</item>
+/// </list>
+/// Both hooks call the same <see cref="ConsumeRestorePending"/>, so whichever fires first wins and the
+/// other is a no-op.
 /// </summary>
 public static class DojoRunBrowser
 {
@@ -74,6 +86,25 @@ public static class DojoRunHistoryFlagRestorePatch
     public static void Postfix(NSubmenu __instance)
     {
         if (__instance is NRunHistory && DojoRunBrowser.ConsumeRestorePending())
+        {
+            UserDataPathProvider.IsRunningModded = true;
+        }
+    }
+}
+
+/// <summary>Safety net for the launch-a-replay path, which tears down the main menu scene (and whatever
+/// submenu was open on it) via a direct scene swap rather than by popping the submenu stack — see the class
+/// docs on <see cref="DojoRunBrowser"/>. Patched broadly on the scene container itself (fires for every
+/// scene swap in the game, not just Dojo ones) rather than narrowly on the launch path, so this can't be
+/// missed by some other future code path that also swaps the current scene while the browser is open;
+/// <see cref="DojoRunBrowser.ConsumeRestorePending"/> is a no-op unless the flag is actually pending.</summary>
+[HarmonyPatch(typeof(NSceneContainer), nameof(NSceneContainer.SetCurrentScene))]
+public static class DojoRunHistorySceneSwapRestorePatch
+{
+    // ReSharper disable once UnusedMember.Global
+    public static void Prefix()
+    {
+        if (DojoRunBrowser.ConsumeRestorePending())
         {
             UserDataPathProvider.IsRunningModded = true;
         }

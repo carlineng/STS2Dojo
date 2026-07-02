@@ -38,7 +38,13 @@ public partial class DojoCompletionScreen : Control, IScreenContext
         }
 
         var screen = new DojoCompletionScreen();
-        screen.BuildLayout(won);
+        if (!screen.BuildLayout(won))
+        {
+            // BuildLayout already logged why. screen was never added to any tree, so it must be freed
+            // explicitly here or it leaks (Godot Nodes aren't reference-counted/GC-collected).
+            screen.QueueFreeSafely();
+            return;
+        }
 
         // Add to the live tree BEFORE configuring the buttons below: NPopupYesNoButton.SetText touches a
         // private field only populated by the button's own _Ready()/ConnectSignals(), which Godot doesn't
@@ -48,7 +54,9 @@ public partial class DojoCompletionScreen : Control, IScreenContext
         screen.WireButtons();
     }
 
-    private void BuildLayout(bool won)
+    /// <returns>False if the buttons couldn't be built (already logged) — the screen is left partially
+    /// constructed and unusable; the caller must not add it to the tree or call <see cref="WireButtons"/>.</returns>
+    private bool BuildLayout(bool won)
     {
         SetAnchorsPreset(LayoutPreset.FullRect);
         MouseFilter = MouseFilterEnum.Stop;
@@ -71,7 +79,7 @@ public partial class DojoCompletionScreen : Control, IScreenContext
         if (buttonTemplateSource == null)
         {
             MainFile.Logger.Error("[STS2Dojo] Could not build Dojo completion screen buttons.");
-            return;
+            return false;
         }
 
         NPopupYesNoButton buttonTemplate = buttonTemplateSource.GetNode<NPopupYesNoButton>("VerticalPopup/YesButton");
@@ -84,6 +92,7 @@ public partial class DojoCompletionScreen : Control, IScreenContext
         box.AddChild(_tryAgainButton);
         box.AddChild(_returnToDojoButton);
         box.AddChild(_returnToMainMenuButton);
+        return true;
     }
 
     private void WireButtons()
