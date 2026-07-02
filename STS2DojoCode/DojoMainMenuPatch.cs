@@ -37,6 +37,12 @@ public static class DojoMainMenuPatch
 
         var dojoButton = (NMainMenuTextButton)template.Duplicate(DuplicateFlagsNoSignals);
 
+        // Must happen before the duplicate enters the tree — see DojoNodeDuplication's class docs. NButton's
+        // ConnectSignals() (which NMainMenuTextButton inherits into) resolves a "%ControllerIcon" unique
+        // name; without this, that lookup silently fails and the button can be left showing a stray
+        // controller-hotkey icon.
+        DojoNodeDuplication.ReownRecursively(dojoButton);
+
         // Set the label directly via the node tree (bypassing SetLocalization/LocString, which this mod has
         // no table entries for) — safe to do immediately, since Duplicate() copies the structural child tree
         // regardless of whether _Ready() has run on the duplicate yet.
