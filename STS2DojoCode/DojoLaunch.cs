@@ -10,6 +10,7 @@ using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Singleton;
 using MegaCrit.Sts2.Core.Multiplayer.Game;
 using MegaCrit.Sts2.Core.Nodes;
+using MegaCrit.Sts2.Core.Nodes.Audio;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Saves;
 using MegaCrit.Sts2.Core.Unlocks;
@@ -67,6 +68,13 @@ public static class DojoLaunch
     private static async Task<RunState> LaunchInternal(
         NGame game, CharacterModel character, int ascensionLevel, ModelId encounterId, Action<RunState> mutate)
     {
+        // Match the base game's run-start behavior (main-menu/custom/daily flows all stop menu music before
+        // launching) and also clear any lingering end-of-combat sting that might still be playing when the
+        // player hits Try Again from the completion screen. Run music and global music are managed by
+        // separate systems, so stop both to guarantee the new fight starts with a single active track.
+        NRun.Instance?.RunMusicController.StopMusic();
+        NAudioManager.Instance?.StopMusic();
+
         if (RunManager.Instance.IsInProgress)
         {
             RunManager.Instance.CleanUp();

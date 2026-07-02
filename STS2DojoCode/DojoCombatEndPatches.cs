@@ -33,7 +33,7 @@ public static class DojoSkipRewardsPatch
             return true;
         }
 
-        MainFile.Logger.Info("[STS2Dojo] Dojo combat won — skipping rewards/map, returning to Run History.");
+        MainFile.Logger.Info("[STS2Dojo] Dojo combat won — skipping rewards/map, showing completion screen.");
         DojoCombatEndInterceptor.HandleWin();
         return false;
     }
@@ -50,7 +50,7 @@ public static class DojoSkipGameOverPatch
             return true;
         }
 
-        MainFile.Logger.Info("[STS2Dojo] Dojo combat lost — skipping game-over screen, returning to Run History.");
+        MainFile.Logger.Info("[STS2Dojo] Dojo combat lost — skipping game-over screen, showing completion screen.");
         DojoCombatEndInterceptor.HandleLoss();
         return false;
     }

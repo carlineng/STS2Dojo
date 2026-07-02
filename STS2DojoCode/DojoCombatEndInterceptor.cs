@@ -1,43 +1,20 @@
-using System.Threading.Tasks;
-using MegaCrit.Sts2.Core.Helpers;
-using MegaCrit.Sts2.Core.Nodes;
-using MegaCrit.Sts2.Core.Nodes.Screens.RunHistoryScreen;
-
 namespace STS2Dojo.STS2DojoCode;
 
 /// <summary>
 /// Where a Dojo fight's win/loss actually redirects to, once <c>DojoCombatEndPatches.cs</c> has decided to
-/// skip the normal rewards/game-over flow for a Dojo run. Reuses the game's own "return to main menu" path
-/// (<c>NGame.ReturnToMainMenu</c> — the same one the pause menu's "quit run" and the game-over screen's
-/// "Main Menu" button call) and then lands on Run History specifically, which nothing built-in does in one
-/// call. <c>PushSubmenuType&lt;NRunHistory&gt;()</c> is the same call the Compendium menu uses to reach
-/// Run History normally.
-///
-/// Both handlers are fire-and-forget via <see cref="TaskHelper.RunSafely"/>, matching the game's own
-/// pattern (e.g. <c>NCombatUi.OnCombatWon</c>'s reward flow). This matters here specifically because
-/// <c>ReturnToMainMenu()</c>'s first statement is an awaited fade-out — a real async yield — so
-/// <c>RunManager.CleanUp()</c> (called later inside it) never runs synchronously inside the still-unwinding
-/// combat-end call stack (<c>NCombatUi.OnCombatWon</c> / <c>CreatureCmd.Kill</c>), which would otherwise
-/// risk <c>CombatManager.Reset()</c> mutating state the original call stack reads afterward.
-///
-/// Note: the modded profile's Run History is empty today — feeding it the real profile's <c>.run</c> files
-/// is CLAUDE.md §9 roadmap item 5, separate future work. Landing on an empty screen here is expected.
+/// skip the normal rewards/game-over flow for a Dojo run. Shows <see cref="DojoCompletionScreen"/> (Try
+/// Again / Return to Dojo / Return to Main Menu — CLAUDE.md §9 roadmap item 2b) directly on top of the
+/// still-alive combat scene via <c>NModalContainer</c>, the same way the game shows mid-run confirmations
+/// like "abandon run?". No <c>NGame.ReturnToMainMenu()</c> call is needed here at all: unlike the old direct-
+/// to-Run-History redirect, showing the completion screen involves no scene transition, so there's nothing
+/// async to run inside the still-unwinding combat-end call stack (<c>NCombatUi.OnCombatWon</c> /
+/// <c>CreatureCmd.Kill</c>). <c>ReturnToMainMenu()</c> (and the <c>RunManager.CleanUp()</c> inside it) only
+/// runs later, once the player actually picks a button — by which point we're a fresh top-level Godot input
+/// callback, not nested inside the original call stack.
 /// </summary>
 public static class DojoCombatEndInterceptor
 {
-    public static void HandleWin() => TaskHelper.RunSafely(ReturnToRunHistoryAsync());
+    public static void HandleWin() => DojoCompletionScreen.Show(won: true);
 
-    public static void HandleLoss() => TaskHelper.RunSafely(ReturnToRunHistoryAsync());
-
-    private static async Task ReturnToRunHistoryAsync()
-    {
-        NGame? game = NGame.Instance;
-        if (game == null)
-        {
-            return;
-        }
-
-        await game.ReturnToMainMenu();
-        game.MainMenu?.SubmenuStack.PushSubmenuType<NRunHistory>();
-    }
+    public static void HandleLoss() => DojoCompletionScreen.Show(won: false);
 }
