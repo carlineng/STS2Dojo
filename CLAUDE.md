@@ -1,0 +1,414 @@
+# STS2 Dojo Project
+
+**Purpose of this doc:** the design reference AND running build log for STS2 Dojo. It captures what the mod is, what's been decided, what the run-file data can/can't support, and current status. The §8 spike is **done**; real coding is underway. Read the status block below first, then the rest as reference.
+
+---
+
+## 0. Current status & how to resume (updated 2026-07-02) — READ FIRST
+
+The §8 sandbox spike is **complete and validated** (statically + empirically). The reconstructor (§9 roadmap item 1) is **built, empirically validated in-game against a real `.run` file, and now covered by a lightweight unit-test harness**. The first real UI loop is now merged to `main`: a **Dojo main-menu entry point**, a **real-profile Run History browser**, combat-floor click-to-replay, and a **Completion screen** after win/loss. The task-tool list is ephemeral (it resets between/within sessions) — **§9 is the durable roadmap; this block is the durable status.**
+
+**Done this far:**
+- **Spike validated — Approach A works.** A `dojo <encounter_id>` dev command launches a fight from a throwaway *non-saving* run and creates **zero run-history entries** on win/abandon/death, real save untouched. Full result + punch-list in §8.0.
+- **Dev environment working (macOS 26.5.1, MacBook Air M1):** modded game boots, builds auto-deploy, `dojo` launches fights.
+- **Reconstructor built and validated (`STS2Dojo/STS2DojoCode/Reconstruction/`):** `.run` file + global floor → provenance-tagged loadout (deck/relics/HP/gold), wired into a new `dojoreplay <run_file_path> <floor>` dev command. Validated by reconstructing floor 25 of `runfiles/1779595721.run` in-game: 24-card deck (incl. ascension-10 Ascender's Bane), 10 relics, HP 30/70, gold 55 — all confirmed to match the file, deck/relics functionally correct (relics proc, e.g. Tough Bandages triggered on discard). See §5a for what changed vs. the original plan and the bugs this surfaced.
+- **RunReconstructor + decision-helper unit tests added (`STS2Dojo/STS2Dojo.Tests/`):** no-NuGet console test harness that compiles the real reconstruction/decision helper source against small DTO test doubles and reads local `runfiles/*.run` fixtures directly. Verified with `/usr/local/share/dotnet/dotnet run --project STS2Dojo.Tests/STS2Dojo.Tests.csproj`: 8 reconstruction fixture tests + 5 decision-helper test groups pass. See §5b.
+- **Potion reconstruction implemented (2026-07-01), closing the last "Assumed" field in the loadout contract — including a wrong turn worth reading.** `RunReconstructor` replays `potion_choices`/`potion_used`/`potion_discarded` (structural signals) plus explicit max-potion-slot tracking (Ascension's Tight Belt, Potion Belt/Alchemical Coffer/Phial Holster). An initial version also added event-based fallback grants/removals (Drowning Beacon/Potion Courier/Ranwid the Elder/Stone of All Time), which got merged and unit-tested but turned out to be solving a nonexistent gap and produced real bugs (caught via in-game slot-count mismatch) — deleted; see §5d for the full account, since it's a good example of corpus correlation without checking the actual game logic leading you wrong. `DojoReplayConsoleCmd` now gives the player the reconstructed potions and reconciles slot count to the computed true value. 8 potion acceptance fixtures pass, 3 of them regression tests for the deleted bug — see §5d.
+- **Mod code, in `STS2Dojo/STS2DojoCode/`:**
+  - `MainFile.cs` — mod initializer (`[ModInitializer]`); runs `new Harmony(ModId).PatchAll()`.
+  - `SentryMacOsHangPatch.cs` — **CRITICAL, DO NOT REMOVE.** Harmony prefix that skips `SentryService.Shutdown()` on macOS. Without it the modded game **hard-hangs at the main menu on macOS 26.x** (native Sentry GDExtension run-loop-observer deadlock). Full diagnosis in the `baselib-sentry-macos-hang` memory. (Open TODO: make modded Sentry fully silent — see the `TODO(telemetry)` in that file; currently telemetry is at unmodded parity / gated by the user's data-upload consent.)
+  - `DojoConsoleCmd.cs` — `dojo <encounter_id>`: launches a throwaway fight with a hardcoded junk loadout (gold=999). Still useful for quick ad-hoc encounter testing.
+  - `DojoLaunch.cs` — the shared launch sequence (`LaunchThrowawayRun`/`TryAgain`), reused by `DojoConsoleCmd`/`DojoReplayConsoleCmd`/`DojoReplayLauncher`/`DojoAgainConsoleCmd`; now also stops stale run/global music before launching/retrying a Dojo fight. See §5c for what it does and why.
+  - `DojoReplayConsoleCmd.cs` — `dojoreplay <run_file_path> <floor>`. Loads a `.run` file, reconstructs the loadout entering that floor's fight, and launches it.
+  - `DojoReplayLauncher.cs` — shared reconstruction+launch pipeline for the console command and UI floor-click path; resolves the encounter, snapshots the true ascension-adjusted starting inventory, reconstructs the loadout, mutates the throwaway run, and launches via `DojoLaunch`.
+  - `DojoAgainConsoleCmd.cs` — `dojoagain`: relaunches the last `dojo`/`dojoreplay` launch with the same loadout and fresh combat RNG ("try again"). See §5c.
+  - `DojoMainMenuPatch.cs` — Harmony postfix on `NMainMenu._Ready` that duplicates the themed Settings main-menu button into a new **Dojo** button, inserts it before Settings, and wires it to `DojoRunBrowser.Open`.
+  - `DojoRunBrowser.cs` — opens the game's existing `NRunHistory` screen against the **real, non-modded profile** by temporarily flipping `UserDataPathProvider.IsRunningModded = false`; restores the flag both on normal submenu close and on scene-swap launch.
+  - `DojoRunHistoryFloorClickPatch.cs` — patches `NMapPointHistoryEntry.Create` so eligible combat floors in the Dojo-opened Run History prompt "Replay this fight in the Dojo?" and then launch through `DojoReplayLauncher`.
+  - `DojoCompletionScreen.cs` — code-only modal shown after a Dojo win/loss, with Try Again / Return to Dojo / Return to Main Menu; reuses rewards-screen title/chrome, custom event-option-style buttons, and blocks hover tips while open to avoid the stray `<null>` tooltip.
+  - `DojoRunRegistry.cs` — tags which `RunState`s are Dojo (throwaway) runs, so the combat-end/save-suppression patches below never affect a real player run. See §5c.
+  - `DojoCombatEndPatches.cs` / `DojoCombatEndInterceptor.cs` — Harmony patches that skip the rewards/map/game-over screens on a Dojo win/loss, suppress the secondary save leaks (`progress.save`, `replays/latest.mcr`), and show `DojoCompletionScreen` instead of redirecting through Run History. See §5c/§5e.
+  - `Reconstruction/RunReconstructor.cs` — the forward-replay algorithm (see §5a).
+  - `Reconstruction/ReconstructedLoadout.cs` — provenance-tagged output model (`Derived`/`Replayed`/`Assumed`).
+  - `Reconstruction/RunHistoryLoader.cs` + `Reconstruction/LocalFileSaveStore.cs` — loads a `.run` file from an arbitrary absolute path by reusing the game's own `RunHistory` schema + `MigrationManager` (see §5a — this replaced the originally-planned hand-rolled parser).
+  - `Reconstruction/RunHistoryQueries.cs` — pure decision helpers: combat-floor detection, single-player gating, floor-history flattening. Unit-tested in §5b.
+  - `Reconstruction/RunHistoryFileSelection.cs` — classifies a candidate `.run` file (load failure, unsupported schema, multiplayer, modifier-bearing, no-combat, includable) for future custom browser/filter/error-state work (§9 item 5). Unit-tested in §5b. Already resolves the §10 daily-run/modifier-run question: modifier-bearing runs are excluded by default (`ExcludeModifierRuns = true`).
+  - `Reconstruction/DojoContentEligibility.cs` — the pure eligibility-check logic (§6) behind an `IDojoContentResolver` seam; collects missing encounter/monster/card/relic ids from a loadout. Unit-tested in §5b, but **not yet wired to a live `ModelDb` resolver or called from `dojo`/`dojoreplay`** — see §9 item 4.
+  - `Reconstruction/RealProfilePath.cs` — builds the real (non-modded) profile's `.run` history path; useful for future custom browser work even though the current first-pass browser uses the live `NRunHistory`/`SaveManager` path by temporarily flipping `UserDataPathProvider.IsRunningModded`.
+- **Relic-visibility fix + combat-end interception built AND empirically confirmed in-game** (branch `fix/relic-visibility-combat-end`, commits `0c58ec0`/`c74b58b`; later extended by PR #3): `DojoLaunch` no longer calls `NGame.StartNewSingleplayerRun`; it replicates the raw sequence manually so the loadout mutation runs *before* `NRun`'s scene is created — this fixes the previously-invisible relic icons (§5a point 6 is now **RESOLVED**; §5c has what shipped). Combat-end is Harmony-patched (`DojoCombatEndPatches.cs`): a Dojo win/loss skips the rewards screen/map/game-over screen and now shows `DojoCompletionScreen` directly over the still-alive combat scene. A `dojoagain` console command still exists for quick dev-loop retries, but the player-facing Try Again button now uses the same `DojoLaunch.TryAgain()` path. `DojoRunRegistry` tags Dojo `RunState`s so none of this touches a real player run. See §5c/§5e for full detail, including two robustness bugs a code review caught (a failed `dojoreplay` mutation could permanently occupy `RunManager.State`; the registry leaked every `RunState` for the process lifetime — both fixed) and the secondary-write suppression status.
+- **Dojo entry point + run browser + Completion screen merged to `main` via PR #3 (2026-07-02).** The modded main menu now has a **Dojo** button; the Dojo reuses the game's `NRunHistory` screen while temporarily pointing save/history lookups at the real profile; eligible combat floors prompt and launch a replay; win/loss opens a centered Completion screen with Try Again / Return to Dojo / Return to Main Menu. This resolves the old design gap where combat-end redirected straight to Run History. See §5e and §9.
+- `STS2Dojo.json` `has_pck` set to **false** (code-only mod, no Godot `.pck` yet — flip back to `true` + do a Godot export once real scenes/assets exist).
+
+**Dev workflow on this Mac:**
+- **Build:** Rider → Build (⌘F9), **or** `/usr/local/share/dotnet/dotnet build STS2Dojo.csproj` from `STS2Dojo/` (dotnet SDK 10.0.301 is installed but not on PATH — invoke by full path; needs network access for NuGet restore on first run). Either way the csproj `CopyToModsFolderOnBuild` target auto-copies dll/pdb/json into the game's `mods/STS2Dojo/`.
+- **Unit tests:** from `STS2Dojo/`, run `/usr/local/share/dotnet/dotnet run --project STS2Dojo.Tests/STS2Dojo.Tests.csproj`. The test project targets `net10.0` because this Mac has the .NET 10 runtime installed; the mod itself remains `net9.0`. The tests intentionally do **not** reference/load `sts2.dll` because loading the real game/Godot assembly outside the game process either hits architecture mismatch or segfaults. Instead they compile the production reconstruction/decision helper source against minimal DTO test doubles.
+- **Run/test:** launch the game **via Steam** (Play button). **Do NOT** double-click / `open` the `.app` directly — direct launch crashes in Sentry on this Mac. The Rider ".NET Executable" launch config is a **dead end here (no Mono installed)**; for a debugger use Rider **Attach to Process** on the Steam-launched game (the mod's `.pdb` is deployed).
+- **Console:** open the in-game dev console. `dojo <encounter_id>` (encounter ids autocomplete via the built-in `fight ` + Tab) for ad-hoc fights; `dojoreplay <absolute_run_file_path> <global_floor>` to launch a reconstructed fight from a real `.run` file; `dojoagain` to relaunch the last `dojo`/`dojoreplay` launch with a fresh combat RNG ("try again") (note: full command must be re-run after every rebuild — relaunch the game via Steam to pick up a new dll).
+- **Logs:** `~/Library/Application Support/SlayTheSpire2/logs/godot.log`. **Save dir** (persistence checks): `~/Library/Application Support/SlayTheSpire2/`; modded runs live under `steam/<id>/modded/profile1/`.
+- **Versions:** game **v0.107.1**; **BaseLib v3.3.2** via Steam Workshop (item `3737335127`).
+
+**Next up (durable roadmap in §9):** eligibility/resolve pass (§9 item 4) → in-game smoke test the full UI loop after PR #3 (main-menu Dojo → real-profile Run History → floor click → replay → Completion screen options) → polish the run-browser UX and error states (§9 item 5 follow-ups).
+
+---
+
+## 1. What we're building
+
+**STS2 Dojo** — a Slay the Spire 2 mod that lets a player replay a specific past fight from their run history, as a standalone practice combat.
+
+Core loop: on the Run History screen, the floor-icon grid (above relics) shows each floor of a finished run. Clicking a **combat** floor opens a confirm dialog ("Replay this fight in the Dojo?"). On yes, the player is dropped into that single fight with a *reconstructed* loadout (deck, relics, HP, gold, etc.). Win or lose, the run does **not** progress — control returns to a **Completion screen** (Try Again / Return to Dojo / Return to Main Menu; see §9 item 2b) rather than back into the original run. It's a throwaway sandbox.
+
+> **Entry-point correction (modded reality, confirmed 2026-06-30):** the game **hides Compendium → Run History when modded** (`NMainMenu` sets the Compendium button `Visible = IsCompendiumAvailable()` = false when modded), and the modded profile has its own *empty* history. So the Dojo does **not** piggyback on the game's menu path. Instead: the mod **adds its own "Dojo" button to the main menu**, and it **re-uses the game's Run History screen (`NRunHistory`) fed with the *real* profile's on-disk `.run` files** (see §9 step 5 for the how). The click → confirm → launch flow above is unchanged; only how you *reach* the run list changed.
+
+**Environment:** macOS. Stack is the standard StS2 modding toolchain — Rider, .NET SDK, Godot/Megadot, BaseLib, the `Alchyr/ModTemplate-StS2` template. All cross-platform; nothing here is Windows-only. Watch for Mac path/`DOTNET_ROOT` quirks in `Directory.Build.props` (see template wiki Setup page).
+
+---
+
+## 2. Scope
+
+**In scope (v1):**
+- Single-player runs only.
+- Retroactive replay — works on already-existing `.run` history files, including runs played before the mod was installed.
+- Combats only (normal / elite / boss, including event-combats).
+- The fight only — no surrounding floor context (no card rewards, shops, events around it).
+- Fresh combat RNG each attempt (see §5 — exact RNG is impossible, not just deferred).
+- A "try again" loop that re-instantiates the same reconstructed loadout without bouncing to history.
+
+**Out of scope (v1):**
+- Multiplayer (detect and exclude; see §6).
+- Per-fight stats / analytics in the Dojo (possible later).
+- Cross-mod content (runs that used other mods' cards/relics) — disallow if cheap; see §6.
+- Deterministic / exact-original RNG replay — **impossible from the save**, do not attempt.
+- Any persistence: no save writes, no rewards granted, no run progression.
+
+**Fast-follow (post-v1, design now so we don't rewrite):**
+- An editor letting the player set the remaining "unknown" fields (relic counters/props) before a replay.
+- Optional user-supplied seed so attempts are *repeatable across tries* (a usability feature — NOT fidelity to the original fight).
+- ~~Potion-inventory reconstruction (recoverable but lossy; see §5).~~ Implemented 2026-07-01 — see §5d.
+
+---
+
+## 3. Key decisions captured
+
+| Decision | Choice | Why |
+|---|---|---|
+| Reconstruction approach | **Approach A** — reconstruct from the `.run` file | Simpler, works retroactively, demo-able now |
+| Retroactive vs forward-only | **Retroactive** | Works on existing history; forward-only snapshotting deferred |
+| Combat RNG | **Fresh per attempt** | Exact RNG unrecoverable from save; fresh is arguably better for practice anyway |
+| Replay loop | **Try again** re-instantiates same loadout | Dojo wants fast retries |
+| Eligible nodes | **Combats only**, detected by encounter not node type | See §6 — node type is misleading |
+| Visual affordance | **None** | The icons already indicate fight type |
+| Inaccuracy | **Silent inaccuracy acceptable**, but gate provably-incompatible fights as ineligible | See §6 |
+| Loadout model | **Editable object with per-field provenance tags** from day one | Lets fast-follow editor sit on top without a rewrite |
+
+There is an alternative "Approach B" (forward-only: hook combat-start during live play and serialize a *true* snapshot incl. RNG state) that yields *exact* replays but nothing retroactive. Decision: **not now.** Keep the snapshot loader behind an interface so B can be added later as a high-fidelity path that the Dojo prefers when a B-snapshot exists, falling back to A-reconstruction otherwise.
+
+---
+
+## 4. The data model reality (critical context)
+
+The `.run` files are JSON (`schema_version` 8 and 9 in the wild; `build_id` ~v0.98–v0.107). **A `.run` file is an event/metrics log plus ONE end-of-run state snapshot. It is NOT a per-floor game-state snapshot.** There is no stored "state at the start of fight on floor N" — it must be *reconstructed*.
+
+Structure:
+- Top level: `acts`, `ascension`, `build_id`, `game_mode`, `killed_by_*`, `map_point_history`, `modifiers`, `platform_type`, `players`, `run_time`, `schema_version`, `seed`, `start_time`, `was_abandoned`, `win`.
+- `map_point_history` is `[act][floor]`. Each floor = `{ map_point_type, player_stats[], rooms[] }`.
+  - `rooms[]` carries `room_type`, `turns_taken` (always), `model_id` (the **encounter id** — note: the key is `model_id`, NOT `id`), `monster_ids` (combats only).
+  - `player_stats[]` is per-player per-floor deltas: `current_hp`, `current_gold`, `max_hp`, `damage_taken`, `hp_healed`, `gold_*`, and conditional deck-delta keys (see §5).
+- `players[0]` is the **end-of-run** snapshot: `character`, `id`, `deck`, `relics`, `potions`, `max_potion_slot_count`, `badges`. Deck cards carry `id`, `floor_added_to_deck` (global 1-based floor index), `current_upgrade_level`, `enchantment`. Relics carry `id`, `floor_added_to_deck`, and (final-only) stateful `props`.
+
+A 585-file corpus was analyzed; full schema is in `SCHEMA.md` (see §7). Key empirical facts that drive design:
+
+- `floor_added_to_deck` is a **global 1-based floor index** (48 floors = full 3-act run), aligning cleanly with the floor-N boundary.
+- Two schema generations differ in load-bearing ways: `badges` is v9-only; relic counter props are under `props.card_arrays` in v8 but `props.cards` in v9. **Branch on `schema_version`.**
+- 54/585 files were multiplayer.
+
+---
+
+## 5. Field-by-field recoverability (the reconstruction contract)
+
+What the reconstructor can produce for "state entering fight on floor N," and how good each field is:
+
+| Field | Recoverable? | How / caveat |
+|---|---|---|
+| **Encounter + enemies** | **Exact** | `rooms[].model_id` + `monster_ids`. Instantiate enemies fresh from game content tables keyed by these + top-level `ascension`. |
+| **HP / gold entering fight** | **Exact (derived)** | Previous floor's `current_hp`/`current_gold`; cross-checks vs `damage_taken`/`hp_healed`. |
+| **Deck** | **Exact (forward-replay, lossless)** | Start from character's true ascension-adjusted starting deck, walk floors **1→N-1** (NOT N — see §5a) applying `cards_gained` (authoritative; ignore `card_choices`/`bought_colorless`, see §5a), `cards_removed` (instance-identifiable), `cards_transformed` (`original_card`→`final_card`), `upgraded_cards`, `cards_enchanted`. Final `players[0].deck` is a cross-check (exact match once you're walking through the run's last combat floor with no further rewards). **Do NOT filter the final deck by floor** — that loses later-removed cards and shows final upgrade levels. |
+| **Card upgrade timing** | **Sufficient** | `upgraded_cards` logs bare id strings (can't tell which duplicate copy upgraded), but deck is a multiset for combat purposes, so "2 Strike, 1 Strike+" is all that's needed. The duplicate-disambiguation gap is a non-issue here. |
+| **Relics (which ones)** | **Exact** | Starting relics (from the true starting inventory, not `CharacterModel` alone) + `relic_choices`(picked) for floors 1→N-1 (authoritative; ignore `bought_relics`, see §5a), minus `relics_removed`. |
+| **Relic counter/prop state as-of floor N** | **NOT recoverable** | `props` exist only in the end-of-run snapshot. Default to fresh/zero; expose in fast-follow editor. |
+| **Potions held entering fight** | **Recoverable (implemented 2026-07-01, see §5d)** | Replay `potion_choices`(was_picked) − `potion_used` − `potion_discarded` up to floor N (`bought_potions` confirmed redundant, same as `bought_relics`). Event outcomes (Drowning Beacon, Potion Courier, Ranwid the Elder, Stone of All Time) were investigated as a possible extra source but need no special handling — every potion-touching option of theirs already goes through the same structural logging (§5d has the full story, including a wrong turn where an event-based fallback was built, merged, and then deleted). One residual gap: Potion Courier's Ransack option grants a single RNG-selected potion, unrecoverable like combat RNG generally. |
+| **Combat RNG / enemy intents / enemy HP rolls** | **NOT recoverable** | Only `model_id`+`monster_ids`+`turns_taken` stored. No per-combat seed or rng counter anywhere. → fresh RNG per attempt is forced. |
+
+**Loadout object design:** model the reconstructed loadout as an explicit, editable object where each field is tagged with provenance — `derived` (exact from log), `replayed` (forward-reconstructed), or `assumed` (defaulted because unrecoverable). The fast-follow editor is then just a UI over fields already tagged `assumed`. Baking unrecoverable fields as hard constants now would force a rewrite later.
+
+### 5a. Reconstructor build notes (2026-06-30) — what changed vs. the plan above, and what broke
+
+The reconstructor (`STS2Dojo/STS2DojoCode/Reconstruction/`) is built and empirically validated (§0). Building and testing it in-game surfaced several things this doc didn't anticipate. Read this before touching the reconstructor or the launch sequence.
+
+**Architecture change: reuse the game's own save types instead of hand-parsing JSON.** The original plan (§4/§9) assumed a hand-rolled parser branching on `schema_version` 8 vs 9. Turns out the decompiled game already ships exactly the types needed, in the same assembly the mod already references:
+- `MegaCrit.Sts2.Core.Runs.RunHistory` is the literal C# shape of a `.run` file (top-level `win`/`seed`/`ascension`/`map_point_history`/etc. — confirmed by grepping for `JsonPropertyName("win")` in the decompiled source).
+- `MegaCrit.Sts2.Core.Saves.Migrations.MigrationManager.LoadSave<RunHistory>(path)` handles schema_version migration (v8→v9, via the game's own `RunHistoryV8ToV9` migration) for free — **no manual schema branching needed.** It needs an `ISaveStore`; `Reconstruction/LocalFileSaveStore.cs` is a minimal read-only filesystem implementation (all mutating members throw — this must never be able to touch a real save/history file).
+- Per-floor deltas (`cards_gained`, `cards_removed`, `cards_transformed`, `relic_choices`, etc.) deserialize straight into the game's own `SerializableCard`/`SerializableRelic`/`PlayerMapPointHistoryEntry`/`MapPointRoomHistoryEntry` types (`MegaCrit.Sts2.Core.Runs.History` / `MegaCrit.Sts2.Core.Saves.Runs`). The reconstructor's working representation IS `SerializableCard`/`SerializableRelic` (wrapped with a `Provenance` tag), so its output can be handed straight to `CardModel.FromSerializable`/`RelicModel.FromSerializable` — the exact same path the game uses to load a saved deck.
+
+This means `SCHEMA.md`'s hand-authored schema is still the right *reference* doc, but it's no longer the *parsing* contract — the decompiled source is now authoritative for field shapes, and re-decompiling after a game patch will surface any drift automatically (a mismatched `JsonPropertyName` would just fail to deserialize, loudly).
+
+**Correctness bugs found by testing against `runfiles/1779595721.run` (25-floor Silent run, died to `DECIMILLIPEDE_ELITE` on floor 25) and cross-checking against a from-scratch Python re-implementation of the algorithm:**
+
+1. **Off-by-one on "entering the fight."** §5 originally said "walk floors 1→N." Wrong: a combat floor's own `player_stats` entry bundles *that floor's own fight rewards* (e.g. floor 12 — an elite — has non-empty `cards_gained`/`relic_choices` in the SAME floor entry as the elite fight itself). Walking through floor N inclusive hands the player the rewards for the fight they're about to (re)play. Fixed: walk **floors 1 through N-1 only**. Verified against the sample file: floor 24's `current_hp`/`current_gold` (30/70, 55 gold) is the correct "entering floor 25" snapshot, not floor 25's own (post-death) values.
+2. **`card_choices`/`bought_colorless` and `bought_relics` are redundant, not additive.** Applying both `card_choices`(picked) and `cards_gained` double-counted every picked reward card (confirmed: Blade Dance, Precise Cut, Snakebite, Backflip, Footwork, Afterimage all appeared twice). Same for relics: `bought_relics` duplicated `relic_choices`(picked) entries bought at a shop (e.g. Miniature Tent, floor 21). **Scanned all 531 single-player files / 13,754 floors in `runfiles/`: zero counterexamples** — every picked `card_choices`/`bought_colorless` entry is already in `cards_gained` for the same floor, and every `bought_relics` entry is already covered by a `relic_choices`(picked) entry. Fix: `cards_gained` is the sole authoritative source for card gains; `relic_choices`(picked) is the sole authoritative source for relic gains. `card_choices`/`bought_colorless`/`bought_relics` are NOT applied by the reconstructor (still useful for future UI display of "what was offered", just not for building the deck/relic list).
+3. **`CharacterModel.StartingDeck`/`StartingRelics` alone is wrong at high ascension.** Silent's run had `CARD.ASCENDERS_BANE` in the final deck with `floor_added_to_deck: 1` and no corresponding `cards_gained` entry anywhere in the file — it's part of the *true* ascension-adjusted starting deck (ascension curses etc.), which only exists once the game actually creates a `Player` for that character+ascension via `Player.CreateForNewRun`. Seeding the reconstructor from `character.StartingDeck`/`StartingRelics`/`StartingHp`/`StartingGold` directly missed this. Fixed: `RunReconstructor.Reconstruct` now takes the starting deck/relics/HP/gold as **parameters**, supplied by the caller from a live throwaway `Player` (`DojoReplayConsoleCmd` snapshots `player.Deck`/`player.Relics`/`player.Creature.MaxHp`/`player.Gold` right after `StartThrowawayRun`, before mutating anything). Net effect: `RunReconstructor` no longer touches `ModelDb`/`CharacterModel` at all — it's back to being pure data in/data out.
+
+**Runtime bugs found launching the reconstructed loadout into an actual fight:**
+
+4. **Crash: `RunState.Contains` NRE the moment combat's hook system walks the deck.** Adding cards via `player.Deck.AddInternal(CardModel.FromSerializable(...), ...)` directly leaves `CardModel.Owner` null — `CardPile.AddInternal` doesn't set it. `Owner` is only set by `RunState.AddCard(card, owner)`, which is what `RunState.LoadCard(serializableCard, owner)` calls internally (the same method the game itself uses to load a saved deck, e.g. in `Player.SyncWithSerializedPlayer`). Fix: reconstructed cards go through `runState.LoadCard(serializableCard, player)` to get a properly-registered `CardModel`, *then* `player.Deck.AddInternal(card, ...)`.
+5. **Deck counter in the top bar shows a stale count.** `NTopBarDeckButton` only refreshes on `CardPile.CardAddFinished`/`CardRemoveFinished` — NOT the per-card `CardAdded` event. `CardPile.AddInternal(card, silent: false)` never fires `CardAddFinished`; it's a separate method (`CardPile.InvokeCardAddFinished()`) the caller is expected to invoke once after a batch (this is the same pattern the game's own card-fly VFX code uses). Fix: add reconstructed cards with `silent: true` (skip per-card VFX/events), then call `player.Deck.InvokeCardAddFinished()` once after the loop.
+6. **Relic icons render invisible — RESOLVED 2026-07-01, see §5c.** Relics/potions don't have a "Finished" batching hook like cards do (`NRelicInventory` subscribes directly to `Player.RelicObtained`/`RelicRemoved`), so those go through non-silent `AddRelicInternal`/`DiscardPotionInternal` calls instead. That fixes the relic *data* (confirmed: relics proc correctly — e.g. Tough Bandages triggered on a discard — and hover tooltips work), but the icon itself renders at alpha=0. Root cause: `NRelicInventory.Add(relic, startsShown: false, ...)` is the path taken for anything obtained via the `RelicObtained` event *after* `NRelicInventory.Initialize()` has already run (which is what happens for every relic reward during normal play — the icon starts invisible and is faded in by an "acquired" animation, `AnimateRelic`, that the normal reward-flow code calls explicitly). We never call that animation. The only relic that shows correctly is whichever one was already in `player.Relics` at scene-creation time (i.e. the starting relic) — `NRelicInventory.Initialize()` adds those with `startsShown: true`. **Fix requires mutating `player.Relics`/`player.Deck` *before* `NRun`'s scene is created**, i.e. before `NRelicInventory.Initialize()` runs — which means bypassing the convenience wrapper `NGame.StartNewSingleplayerRun` (which creates the scene internally) for the raw 3-step §8.0 sequence (`RunState.CreateForNewRun` → `RunManager.Instance.SetUpNewSingleplayer(shouldSave:false)` → mutate `runState.Players[0]` → `RootSceneContainer.SetCurrentScene(NRun.Create(runState))`), with `DojoLaunch` exposing a hook/callback for the mutation step. This turned out to be real restructuring, not a one-line fix, and it overlapped with §9 roadmap item 2 ("intercept combat-end") as predicted — both were done together. §5c has what actually shipped.
+
+### 5b. RunReconstructor unit-test harness (2026-07-01)
+
+`STS2Dojo/STS2Dojo.Tests/` is a lightweight console test project for agentic development. It deliberately avoids xUnit/NUnit/NuGet packages and deliberately does **not** load the real `sts2.dll` at runtime. Loading the installed game assembly outside the game/Godot process failed on this Mac (x86_64 game assembly vs arm64 dotnet, and an arm64 assembly load path segfaulted), so the harness instead compiles the production reconstruction/decision helper source directly against minimal DTO test doubles in `STS2Dojo.Tests/TestDoubles/`.
+
+Run it from `STS2Dojo/`:
+
+```
+/usr/local/share/dotnet/dotnet run --project STS2Dojo.Tests/STS2Dojo.Tests.csproj
+```
+
+Current passing fixtures:
+- `1779595721.run` floor 25 — known empirically validated Silent A10 elite (`DECIMILLIPEDE_ELITE`), 24-card deck, 10 relics, HP 30/70, gold 55.
+- `1781906039.run` floor 2 — recent v0.107.1 first combat, checks previous-floor HP/gold and ascension-adjusted starting deck.
+- `1782434199.run` floor 9 — target-floor card/relic rewards are excluded (off-by-one guard).
+- `1782705511.run` floor 5 — event-combat case: `map_point_type: unknown`, but room is a real monster combat.
+- `1782524433.run` floor 48 — recent full-length Ironclad A10 boss win.
+- `1782182181.run` floor 48 — late Silent A10 boss with prior relic removals.
+- `1781843292.run` floor 50 — mutation-heavy late boss stress fixture.
+- `1782696823.run` floor 49 — single-player Defect A10 final boss. Note: `1782788638.run` looked like a useful Defect A10 final-boss fixture during corpus search, but it is multiplayer and belongs in a future negative/gating test instead.
+
+Current passing decision-helper test groups:
+- **Combat floor detection:** `monster`/`elite`/`boss` rooms count as combat; non-combat rooms are rejected; event-combat fixture `1782705511.run` floor 5 is found by room type despite `map_point_type: unknown`.
+- **Single-player gate:** accepts `players.Count == 1 && players[0].Id == 1`; rejects multiplayer fixture `1782788638.run`; `RunReconstructor` now fails fast with a clearer single-player error.
+- **Eligibility/resolve pass:** `DojoContentEligibility` collects missing encounter, monster, card, and relic ids from a reconstructed loadout through an `IDojoContentResolver` seam.
+- **Run history file selection/filtering:** classifies non-`.run` files, load failures, unsupported schema versions, multiplayer runs, modifier runs, no-combat runs, and includable runs.
+- **Real-profile path construction:** builds `user://steam/<id>/profileN/saves/history` and strips the `modded/` segment from a modded profile base path.
+
+Potion reconstruction acceptance suite (part of the same `dotnet run` command above, no opt-in flag — see §5d for the implementation, including a bug the last 3 fixtures below now guard against):
+- `1773537304.run` floor 5 — Drowning Beacon's Bottle option leaves Vulnerable Potion + Glowwater Potion entering the next combat (structurally tracked).
+- `1773538354.run` floor 17 — `RELIC.PETRIFIED_TOAD` leaves `POTION.POTION_SHAPED_ROCK` in inventory alongside earlier potions.
+- `1777731795.run` floor 28 — Potion-Shaped Rock discarded by The Future of Potions is gone entering the next elite.
+- `1776407214.run` floor 21 — Potion Courier's Grab Potions option leaves two Foul Potions entering the next combat (structurally tracked).
+- `1778868022.run` floor 31 — Foul Potions used at a merchant are removed, and the shop-bought potion isn't double-counted.
+- `1782178743.run` floor 14 — regression fixture: a Drowning Beacon event where the **Climb** option was chosen (gains a relic, not a potion) must not leak a Glowwater Potion grant. Also asserts `MaxPotionSlots` reflects Ascension 10's Tight Belt reduction (2, not the base 3).
+- `1777590946.run` floor 21 — regression fixture: a Stone of All Time event where the **Push** option was chosen must not remove the held Skill Potion. Also asserts `MaxPotionSlots` reflects a Potion Belt-style relic bonus (6).
+- `1779159270.run` floor 25 — regression fixture: Potion Courier's **Ransack** option offered a potion with no open slots (2/2 full), so nothing should be guessed into the inventory; Potion Belt is picked up one floor later, asserted via `MaxPotionSlots`.
+
+Corpus scan: all 216 `bought_potions` entries were already represented by a picked `potion_choices` entry on the same floor (redundant, like `bought_relics`) — confirmed, not just assumed.
+
+Because the test project uses DTO doubles, it is best for the pure reconstruction algorithm and schema-shape regressions. It is **not** an integration test for `RunHistoryLoader`, `MigrationManager`, `DojoLaunch`, Godot scene creation, live `ModelDb` content resolution, relic-icon rendering, save suppression, or combat-end interception.
+
+### 5c. Relic-visibility fix + combat-end interception (2026-07-01) — resolves §5a point 6 and §9 roadmap item 2
+
+Branch `fix/relic-visibility-combat-end` (commits `0c58ec0`, `c74b58b`). Research this round went directly against `decompiled/` rather than trusting this doc's earlier static analysis, which undersold the real scope of "intercept combat-end" (see below) — then the result was empirically confirmed in-game.
+
+**`DojoLaunch.cs` rewritten.** `StartThrowawayRun`/`EnterEncounter` are gone; the new entry point is `DojoLaunch.LaunchThrowawayRun(game, character, ascensionLevel, encounterId, mutate)`, which manually replicates `NGame.StartRun` (the private helper `NGame.StartNewSingleplayerRun` calls internally) instead of calling that wrapper:
+```
+RunState.CreateForNewRun(...) → RunManager.Instance.SetUpNewSingleplayer(shouldSave:false)
+→ CombatReplayWriter.IsEnabled = false → DojoRunRegistry.MarkAsDojo(runState)
+→ PreloadManager.LoadRunAssets/LoadActAssets → RunManager.Instance.FinalizeStartingRelics() → RunManager.Instance.Launch()
+→ mutate(runState)   // <<< the fix: deck/relics/hp/gold replaced HERE, before the scene exists
+→ game.RootSceneContainer.SetCurrentScene(NRun.Create(runState))
+→ RunManager.Instance.EnterRoomDebug(...)
+```
+Confirmed **`EnterAct(0)` (map/act entry) can be skipped entirely** — `EnterRoomDebug` only requires `RunManager.State != null` and short-circuits map/act lookups when given a concrete `EncounterModel` (exactly like the built-in `fight` console command, which never calls `EnterAct` either — no map/act state is needed for a single scripted encounter). One caveat worth remembering: `Player.AddRelicInternal` does **not** call `RelicModel.AfterObtained()` — that's the caller's job (see `RelicCmd.Obtain`/`RunManager.FinalizeStartingRelics`). `DojoReplayConsoleCmd` deliberately does **not** call it for reconstructed relics: every reconstructed relic's one-time pickup effect (e.g. `Pear`'s permanent Max HP boost, `Whetstone`'s one-time card upgrades) already happened earlier in the *original* run and is already baked into the run file's logged HP/gold/upgrade values that `RunReconstructor` reads directly — calling `AfterObtained()` again would double-apply those effects.
+
+`DojoLaunch.TryAgain()` remembers the last launch request and replays it (fresh RNG each time, per §3); backs the new `dojoagain` console command.
+
+**Combat-end interception (`DojoCombatEndPatches.cs`, `DojoCombatEndInterceptor.cs`).** Turned out there's no single "combat ended" hook — an ordinary win never calls `RunManager.OnEnded` at all (only a full-run "final boss" victory does); the real win hook is the `CombatManager.CombatWon` event, and loss detection is a direct synchronous call inside `CreatureCmd.Kill`, not an event. Three Harmony patches, all gated on `DojoRunRegistry.IsCurrentRunDojo()` so real player runs are untouched:
+- `NCombatUi.OnCombatWon` prefix → skip (returns `false`) for Dojo runs, which skips the rewards screen + map entirely.
+- `NRun.ShowGameOverScreen` prefix → skip for Dojo runs, which skips the game-over screen.
+- Both route through `DojoCombatEndInterceptor`, which now shows `DojoCompletionScreen` directly on top of the still-alive combat scene via `NModalContainer`. This replaced the old direct-to-Run-History redirect (`ReturnToMainMenu()` + `PushSubmenuType<NRunHistory>()`), which was a dead end once the Dojo got its own main-menu entry point. `ReturnToMainMenu()` only runs later if the player clicks **Return to Dojo** or **Return to Main Menu**, safely outside the still-unwinding combat-end call stack.
+
+The key design choice here: the completion UI is a modal overlay, not a scene transition. It keeps combat-end interception synchronous and minimal, then lets each button decide when to tear down the throwaway run. **Try Again** clears the modal and calls `DojoLaunch.TryAgain()`. **Return to Dojo** clears the modal, returns to main menu, then opens `DojoRunBrowser`. **Return to Main Menu** clears the modal and returns to main menu only.
+
+**Secondary-write suppression (`DojoCombatEndPatches.cs`).** Research surfaced the §8.0 punch-list was incomplete: `SaveManager.Instance.UpdateProgressAfterCombatWon(...)` + `SaveManager.Instance.SaveProgressFile()` are called **unconditionally on every combat win** (not just the previously-documented loss-path `CheckUpdateEnemyDiscoveryAfterLoss` leak inside `RunManager.OnEnded`). All three are now Harmony-patched off for Dojo runs. `replays/latest.mcr` needs no patch — `CombatReplayWriter.IsEnabled = false`, set once at launch, is checked by every write site. `prefs.save` was traced to only 2 call sites (`NGame.Quit()`, the settings screen) — **neither fires on combat end**; the original spike's finding was very likely just the ordinary app-quit write from the Steam-relaunch-per-build dev loop, not a Dojo-specific leak. Left unpatched; flagged for a targeted re-check if it resurfaces.
+
+**Two robustness bugs a code review caught and fixed (same branch, commit `c74b58b`):**
+- A failed `mutate` callback (e.g. `dojoreplay` hitting unresolvable content mid-reconstruction) left `RunManager.State` permanently occupied — `RunManager.SetUpNewSingleplayer` throws `"State is already set."` for *any* subsequent run, Dojo or real, until something else happened to call `CleanUp()` first. Fixed: `LaunchInternal` now wraps the mutate/asset/scene-creation sequence in a try/catch that calls `RunManager.Instance.CleanUp()` immediately on failure and rethrows.
+- `DojoRunRegistry.Unmark` had no call sites — every `dojoagain` retry pinned the previous `RunState` (and its whole object graph) in the registry for the process lifetime. Fixed: a Harmony prefix on `RunManager.CleanUp()` unmarks the current state automatically, so every teardown path (the launch guard, the win/loss redirect, the new failure-recovery path above) stays correct without remembering to call `Unmark` at each call site.
+
+**Verified in-game:** relic icons in `dojoreplay` render correctly and immediately (headline fix); win/loss both skip rewards/map/game-over; `dojoagain` retries with fresh RNG. Later UI work verified the Completion screen visually in-game and exercised its live Steam-mod build path. Not yet separately re-confirmed: the save-leak byte-diff / `prefs.save` question from the plan, and a full post-PR #3 smoke pass through every Completion-screen button after the final hover-tip and color tweaks.
+
+A good easy-win fixture for future in-game smoke tests (win path): `dojoreplay <path>/runfiles/1780077009.run 45` — Silent A10, single-monster `ENCOUNTER.GLOBE_HEAD_NORMAL` hallway fight, 110/110 HP with zero damage taken in the original run.
+
+### 5d. Potion reconstruction implemented (2026-07-01) — including a wrong turn worth remembering
+
+Potions were the last field in the §5 table stuck at "Assumed" (v1 shipped empty slots, per the §10 decision at the time). Implemented now, closing the gap. **This section originally documented a design that was built, unit-tested, and merged — then found wrong via in-game testing.** Left in below because the wrong turn is the useful part: it's a concrete example of why corpus correlation alone isn't sufficient evidence, and the fix is small once you see it. Read this before touching potion logic.
+
+**Structural replay is the whole feature.** `potion_choices`(picked) is the sole authoritative gain source; `potion_used`/`potion_discarded` are removals. `bought_potions` is confirmed redundant (a corpus scan of all 216 entries found each one already duplicated by a picked `potion_choices` entry on the same floor — zero counterexamples, same pattern already established for `bought_relics`/`card_choices`), so it's not applied.
+
+**The wrong turn: an event-based fallback for a gap that didn't exist.** A corpus scan of `event_choices[].variables` found ~150 instances across the 531-file corpus where an event (Drowning Beacon, Potion Courier, Ranwid the Elder, Stone of All Time) mentions a potion by name/count with no matching `potion_choices`/`potion_used`/`potion_discarded` entry that floor. The first implementation treated this as a real recoverability gap and added event-driven fallback grants/removals, keyed on the event's *name* (`event_choices[].title.key`'s prefix before `.pages.`) — e.g. "any `DROWNING_BEACON` event with a `Potion` variable grants that potion." This passed 8 unit tests (including hand-corrected fixtures) and got merged. **It was wrong**, caught only when a live in-game `dojoreplay` run showed 3 potions at Ascension 10 with a 2-slot cap.
+
+The actual bug: `event_choices[].variables` reflects **every one of an event's possible options**, populated once at generation time so each option's hover text/description has something to show — regardless of which option the player actually picks. `event_choices[].title.key` in the log is the option *chosen*, but the `variables` dict doesn't change based on that choice. So matching on event name alone fires for every option of that event, not just the potion-touching one. Checking the decompiled event models (`Core/Models/Events/{DrowningBeacon,PotionCourier,RanwidTheElder,StoneOfAllTime}.cs`) directly — rather than trusting the corpus correlation — showed:
+- `DrowningBeacon`: only the **Bottle** option grants Glowwater Potion (via the normal `RewardsCmd.OfferCustom`/`PotionCmd.TryToProcure` reward flow — always structurally tracked, 6/6 in corpus). **Climb** grants a relic (Fresnel Lens) and costs HP — no potion touched at all, yet its `Potion` variable is populated identically to Bottle's.
+- `RanwidTheElder`: only the **Potion** option removes a potion (via `PotionCmd.Discard`, which unconditionally logs to `potion_discarded` — always tracked, 9/9). **Gold** and **Relic** options never touch potions.
+- `StoneOfAllTime`: only the **Lift** option discards a potion (again via `PotionCmd.Discard` — always tracked, 11/11). **Push** doesn't touch potions.
+- `PotionCourier`: **Grab Potions** offers exactly `FoulPotions`-count Foul Potions via the normal reward flow (always tracked, 11/11). **Ransack** is the one genuine exception — it grants a **single random uncommon-rarity potion** chosen via `base.Owner.PlayerRng`, i.e. real RNG, not a fixed "3 Foul Potions" (the `FoulPotions` DynamicVar is shared flavor text, not Ransack's actual output). This is unrecoverable the same way combat RNG is (§5) — Ransack is mostly still structurally tracked when the reward screen logs the decline/pick (24/28 in corpus), and the few residual cases are correctly left as a silent gap rather than guessed.
+
+Net result: **every genuine potion-touching option across all four events is already 100% structurally tracked.** There is no event-only gap to bridge. The entire fallback (event-name matching, the `IPotionNameResolver`/`KnownPotionNames` display-name table, the reflection bridge for reading the game's boxed `DynamicVar`/`StringVar` types, the test-double `EventOptionHistoryEntry`/`LocString` plumbing) was deleted. Three of the acceptance fixtures were rebuilt as regression tests instead — same run files, but asserting that the *non-potion* option (Climb/Push/no-room-Ransack) correctly leaves potions untouched, which is exactly the scenario the deleted code got wrong.
+
+**The one real addition beyond structural replay: max potion slot tracking.** This is what actually caused the in-game symptom (3 potions, 2 slots) and is a genuine gap structural replay alone doesn't cover — nothing in `map_point_history` records slot count directly. `RunReconstructor` now tracks it explicitly per floor:
+- Base 3 slots (`Player.initialMaxPotionSlotCount`), minus 1 for the whole run if `ascension >= 4` (`AscensionLevel.TightBelt`, applied via `AscensionManager.ApplyEffectsTo` — confirmed this already happens automatically for the Dojo's throwaway player too, since it's called from `RunManager.SetUpNewSingleplayer`'s `InitializeNewRun`, which `DojoLaunch` does call).
+- Plus a one-time bonus wherever `relic_choices`(picked) includes `RELIC.POTION_BELT` (+2), `RELIC.ALCHEMICAL_COFFER` (+4), or `RELIC.PHIAL_HOLSTER` (+1) — confirmed via each relic's `AfterObtained()` in the decompiled source, which is the complete set (grepped `AddToMaxPotionCount`/`SubtractFromMaxPotionCount` across all of `decompiled/`). These relics' own `AfterObtained()` also grants potions via `PotionCmd.TryToProcure`, so those are already structurally tracked separately — only the *slot* bonus needed separate tracking, since `DojoReplayConsoleCmd` deliberately never calls `AfterObtained()` for reconstructed relics (§5c: their one-time effects are already baked into the run's logged values) and a slot count has no logged value to bake into.
+
+Exposed as `ReconstructedLoadout.MaxPotionSlots`. `DojoReplayConsoleCmd`'s mutate callback reconciles the throwaway player's slot count to exactly this value (grow *or* shrink via `AddToMaxPotionCount`/`SubtractFromMaxPotionCount`) rather than the original wrong approach of growing slots to fit however many potions got reconstructed — that was the actual mechanism of the in-game bug: it silently expanded capacity to paper over a data problem instead of surfacing it.
+
+**Current fixture set (8, all always-run, see §5b):** the original 5 structural fixtures unchanged, plus 3 regression fixtures (`1782178743.run` floor 14, `1777590946.run` floor 21, `1779159270.run` floor 25) that specifically assert the non-potion-option case stays inert, each also asserting `MaxPotionSlots` to lock in the ascension/relic-bonus computation.
+
+**Not yet re-confirmed in-game after this fix** (the original bug report was in-game; the fix itself has only been unit-tested and rebuilt so far) — the natural next step is re-running the same `dojoreplay` command that surfaced the bug.
+
+### 5e. Dojo entry point, real-profile run browser, and Completion screen (2026-07-02)
+
+Merged to `main` in PR #3 (`644f67f`, feature branch `feature/dojo-entry-point-and-completion-screen`). This resolves §9 item 2b and the first pass of §9 item 5: there is now a player-facing path from main menu → real-profile Run History → combat floor → reconstructed Dojo replay → Completion screen.
+
+**Main-menu entry point (`DojoMainMenuPatch.cs`).** There is no appendable runtime button list on `NMainMenu`: `MainMenuButtons` is computed over hardcoded scene-baked fields. The shipped approach is to Harmony-postfix `NMainMenu._Ready`, duplicate the existing `SettingsButton` (`NMainMenuTextButton`) without signal duplication, reown unique-name references via `DojoNodeDuplication.ReownRecursively`, relabel it to "Dojo", add it to `MainMenuTextButtons`, and move it to the Settings slot so it appears between Multiplayer/Timeline and Settings. Because `NMainMenu.ConnectMainMenuTextButtonFocusLogic()` has already run by then, the patch reflects into the private `MainMenuButtonFocused`/`MainMenuButtonUnfocused` methods so the new button uses the same gold hover-reticle animation as the built-in buttons.
+
+**Real-profile run browser (`DojoRunBrowser.cs`).** The Dojo reuses the game's `NRunHistory` screen instead of building a custom browser. `NRunHistory`/`SaveManager` resolve the run-history path from the current value of `UserDataPathProvider.IsRunningModded`, so `DojoRunBrowser.Open` temporarily sets that flag to `false` while the screen is open. Two restore paths are required and both are implemented:
+- Normal back/close: `NSubmenu.OnSubmenuClosed` postfix restores the flag when the Dojo-opened `NRunHistory` closes.
+- Replay launch: launching a floor swaps scenes directly via `NSceneContainer.SetCurrentScene`, freeing the main-menu scene without popping the submenu stack, so a `SetCurrentScene` prefix restores the flag first.
+
+This is the important safety invariant: the flag must never stay `false` after a launch, or the modded session could accidentally read/write the real profile.
+
+**Floor click → replay (`DojoRunHistoryFloorClickPatch.cs`, `DojoReplayLauncher.cs`).** `NMapPointHistoryEntry.Create` is patched to attach a click handler to replayable floors only: single-player, no modifiers, and an actual combat room. The confirmation dialog uses the base generic popup node but writes raw text directly into `NVerticalPopup` because the mod has no localization table. Confirming launches through `DojoReplayLauncher`, a shared path now used by both UI and `dojoreplay`: resolve encounter, snapshot true ascension-adjusted starting deck/relics/HP/gold from the throwaway player, run `RunReconstructor`, replace deck/relics/potions/HP/gold, reconcile potion slots, and enter the fight.
+
+**Completion screen (`DojoCompletionScreen.cs`).** Code-only modal shown by `DojoCombatEndInterceptor` after win/loss. It deliberately avoids a `.pck`/Godot scene for now:
+- Reuses the real rewards-screen chrome/title style by instantiating `screens/rewards_screen` off-tree, extracting the `Rewards` panel and `%HeaderLabel` style, stripping unwanted children, then rebuilding contents inside it.
+- Uses custom `DojoCompletionEventOptionButton : NButton` for three consistent-width buttons. The button is an event-option-style drawn polygon with a light brown/gold three-band gradient; the label style is duplicated from the game's generic popup yes-button so the font matches the rest of the UI.
+- Buttons are: **Try Again** (`DojoLaunch.TryAgain()`), **Return to Dojo** (`ReturnToMainMenu()` then `DojoRunBrowser.Open(game)`), and **Return to Main Menu** (`ReturnToMainMenu()`).
+- Hover/flicker fix: buttons own their own visual state and use the full fixed button bounds as the hit area; the earlier attempt based on duplicated popup/proceed buttons shared material/visual assumptions that caused all buttons to highlight or flicker.
+- `<null>` tooltip mitigation: the modal clears existing `NHoverTipSet`s, returns an empty Godot native tooltip string, hides the game hover-tip container while open, and sets/restores `NHoverTipSet.shouldBlockHoverTips`. This was added because macOS screenshot-capture mode could let an underlying hover tip appear on top of the modal.
+
+**Audio cleanup:** `DojoLaunch` now stops both `NRun.Instance?.RunMusicController` and `NAudioManager.Instance` music before launching/retrying. This matches the base game's run-start behavior and avoids a lingering end-of-combat sting or menu track overlapping the next Dojo fight.
+
+**Validation done:** repeated live builds to the Steam mods folder with `/usr/local/share/dotnet/dotnet build STS2Dojo.csproj`; temp builds with `-p:ModsPath=/private/tmp/sts2mods/`; in-game screenshot/visual iteration on the completion screen (font, centering, button width, hover behavior, button style/color, and tooltip behavior). **Still worth doing:** a single clean smoke pass after a fresh Steam launch through all three Completion-screen buttons and the macOS screenshot shortcut to confirm the final `<null>` mitigation.
+
+---
+
+## 6. Cross-cutting rules
+
+**Eligibility gate = one resolve-pass (covers both version drift AND cross-mod).** At reconstruction time, collect every content id the fight references — `model_id`, each `monster_id`, every reconstructed card id, every relic id — and check each resolves against the *currently-loaded* content registry (base game + active mods). Any miss → fight is ineligible. This gives the "Doormaker doesn't exist on v107" case and the "run used an uninstalled mod" case for free, with no version-comparison table. Build this first; it doubles as the reconstruction validator.
+
+**Combat detection keys off the room, not the node.** A floor is replayable iff its `rooms[]` has a combat `room_type` (`monster`/`elite`/`boss`), equivalently has `monster_ids`. **Do not filter by `map_point_type`** — a node can be `map_point_type: "unknown"` (an event) yet contain a real fight (event-combat). The sample run's floor 24 (`THE_OBSCURA`) is exactly this: `unknown` node, real combat inside. Filtering by node type would both miss event-combats and risk offering replay on non-combat nodes.
+
+**Multiplayer exclusion = two-field check at file load.** Single-player iff `len(players) == 1 and players[0].id == 1`. MP runs use 17-digit Steam IDs. Gate at load so MP runs never render replay icons.
+
+**Schema branching is mandatory.** Branch on `schema_version` (8 vs 9) in the loader; relic-prop location and `badges` differ. Refuse gracefully ("run saved on unsupported format") on any version outside the validated set rather than guessing.
+
+---
+
+## 7. Artifacts that already exist
+
+- `runfiles/SCHEMA.md` — full empirical schema from a 585-file corpus, including a "Q&A" section answering 11 targeted questions (removals, transforms, upgrade timing, potions, RNG, combat detail, relic props, multiplayer, schema drift, structural invariants, id space) with file-level evidence, plus a "still unknown / need more samples" list. **Read this before writing the reconstructor.** (Present in `./runfiles/`.)
+- A sample `.run` file (`runfiles/1779595721.run`) — Silent, ascension 10, v0.106.1, a complete losing run (died to `DECIMILLIPEDE_ELITE`). Good first reconstruction target.
+- ~585 sample runs in the `./runfiles/` directory.
+- `decompiled/sts2/` — full decompiled game source (the spike's evidence base). `sts2.dll` is the assembly it came from; re-decompile after a game patch to refresh.
+- `STS2Dojo/` — scaffolded mod project (Godot + .NET, ModTemplate layout, git-initialized).
+- `STS2Dojo/STS2Dojo.Tests/` — no-NuGet console test harness for `RunReconstructor` and pure decision helpers; see §5b.
+
+> The `schema_probe.py` script mentioned in earlier handoffs is **not needed** and is not in this workspace — `SCHEMA.md` already captures the corpus analysis. If a future game patch is suspected of changing the format, re-derive from the run files directly rather than maintaining the probe.
+
+---
+
+## 8. The sandbox spike
+
+### 8.0 SPIKE VERDICT (static pass complete — 2026-06-30)
+
+**Approach A is validated — statically AND empirically (2026-06-30).** Static analysis of `decompiled/` put all three questions green; the empirical rung-3 confirmation has now been run on the Mac via a `dojo <encounter_id>` dev-console command (`STS2Dojo/STS2DojoCode/DojoConsoleCmd.cs`) that runs the §8.0 launch sequence with `shouldSave:false`.
+
+**Empirical rung-3 result (save-dir byte-diff across win + abandon + death):** ✅ **ZERO run-history entries created** on any end-state (real history 1070→1070, modded history 0→0), no resumable run save written, real profile untouched. So `shouldSave:false` correctly gates `CreateRunHistoryEntry` and the run-save path — even through a full rewards→map→"save and continue" flow and the death/`OnEnded(false)` game-over path. **Punch-list — 3 secondary writes leak (all inside the throwaway `modded/profile1`, none touching run history or the real save), NOT gated by `shouldSave`:** `progress.save` (progression/discoveries — note `CheckUpdateEnemyDiscoveryAfterLoss` sits *before* the `if(ShouldSave)` block in `OnEnded`), `replays/latest.mcr` (CombatReplayWriter), `prefs.save` (modded-profile prefs). The real Dojo must suppress the progression grant and the replay writer. Also confirmed as a design requirement: the Dojo **must intercept combat-end** to skip rewards/map (now done, §5c) — though the original plan to return straight to Run History is itself superseded (§9 item 2b).
+>
+> **This punch-list is superseded — see §5c for the current picture.** It undercounted: `progress.save` also leaks unconditionally on the WIN path (`SaveManager.UpdateProgressAfterCombatWon`/`SaveProgressFile`), not just the loss-path `CheckUpdateEnemyDiscoveryAfterLoss` noted here. All of `progress.save` (both paths) and `replays/latest.mcr` are now Harmony-patched/suppressed for Dojo runs. `prefs.save` was traced to NOT actually be caused by combat end at all (only `NGame.Quit()`/the settings screen write it) — likely a false positive from the dev workflow, left unpatched.
+
+The game already contains every primitive the Dojo needs, and they compose into this launch sequence (the same one `NSceneBootstrapper.StartNewRun()` and `NGame.StartNewSingleplayerRun()` use):
+
+```
+RunState.CreateForNewRun(players, acts, modifiers, GameMode.Standard, ascension, seed)
+RunManager.Instance.SetUpNewSingleplayer(runState, shouldSave: false)   // ← save kill-switch
+RootSceneContainer.SetCurrentScene(NRun.Create(runState))               // ← scene swap
+// mutate runState.Players[0]: deck / relics / hp / gold / potions  (= the reconstructor output)
+RunManager.Instance.EnterRoomDebug(encounter.RoomType, MapPointType.Unassigned, encounterModel)  // ← launch fight
+```
+
+> **⚠️ Superseded ordering — do not copy this block.** This spike-era sketch mutates the player *after* `SetCurrentScene`, which is exactly the ordering that caused the relic-icon-invisibility bug (§5a point 6). The real shipped sequence (§5c) mutates *before* `SetCurrentScene`, calls it via `game.RootSceneContainer` (an instance property — `RootSceneContainer` isn't a static class, as this sketch implies), and includes steps this sketch omits entirely (asset preload, `FinalizeStartingRelics()`, `Launch()`). Read §5c for the sequence that's actually in `DojoLaunch.cs` today.
+
+**Q1 — launch from a controlled context: YES.** `EnterRoomDebug` is exactly what the `fight <id>` dev-console command calls (`FightConsoleCmd.cs`); combat entry within a run is one call. It builds `CombatRoom` → `CombatState(encounter, runState, modifiers, badges, mpScaling)`, adds `runState.Players`, generates monsters, transitions into the combat scene. **The red-flag scenario is avoided:** `RunState.CreateForNewRun` builds a synthetic run with default acts, and `EnterRoomDebug` uses a `MockSinglePointActMap` — no real map graph and no serialized persistent player are required.
+
+**Q2 — persists nothing: YES, by construction.** `shouldSave` sets `RunManager.ShouldSave`, which gates every persistence path: mid-run save (`RunSaveManager.cs:75`) and **the entire end-of-run block** — `CreateRunHistoryEntry`, `UpdateProgressWithRunData`, achievements, metrics upload — is wrapped in `if (ShouldSave)` inside `RunManager.OnEnded(isVictory)` (~line 1281). `CleanUp()` re-asserts `ShouldSave = false` and nulls `State`. The *only* unconditional `CreateRunHistoryEntry` calls are the main-menu "recover orphaned/abandoned run on startup" path — never reached by our flow. (Still confirm empirically — static analysis can't see a stray cloud/telemetry side-channel.)
+
+**Q3 — clean return to Run History: YES, existing machinery.** Architectural key: **Run History is a submenu on the main-menu scene** (`NMainMenuSubmenuStack` → `PushSubmenuType<NRunHistory>()`), not part of a run. Return = `NGame.ReturnToMainMenu()` (used by pause-menu "quit run" + game-over screen): `FadeOut → RunManager.CleanUp() → LoadMainMenu() → SetCurrentScene(NMainMenu)`, then re-push the RunHistory submenu. **"Try again"** = skip `ReturnToMainMenu`, call `CleanUp()`, re-run the launch sequence with the same reconstructed loadout.
+
+**UI hook:** `NMapPointHistoryEntry : NClickableControl` (has a `FloorNum` property) is the clickable floor-icon — where the confirm-dialog → launch handler attaches.
+
+**Rung-1 field contract (what combat reads to init = the reconstructor's output contract).** From `CombatState` / `CombatRoom` / `CreateCreature`:
+- **Encounter** `EncounterModel` (from `model_id`) + generated monsters (`monster_ids`)
+- **Ascension** → monster HP rolls (`SetUniqueMonsterHpValue` via `RunState.Rng.Niche`, HP scaling)
+- **Per-Player**: deck (CardModels), relics (`player.Relics`, IsMelted-filtered), potions (`player.PotionSlots`), HP (on `player.Creature`), gold, character
+- **Run-level**: `Modifiers`, `BadgeModels`, `MultiplayerScalingModel` (null SP); `RunState` services `Rng` / `CurrentActIndex` / `CurrentMapCoord`
+
+This maps 1:1 onto the §5 recoverability table — no hidden fields combat demands.
+
+**Reconstruction-phase note (not a spike blocker):** for *exact* enemies you must override `Encounter.GenerateMonstersWithSlots` (it generates a monster set; you want to force the logged `monster_ids`). A fight launching at all clears the spike bar.
+
+> Key decompiled anchors (build-specific, re-confirm against the live build): `Core/Combat/CombatState.cs`, `Core/Rooms/CombatRoom.cs`, `Core/Runs/RunManager.cs` (`SetUpNewSingleplayer`/`OnEnded`/`CleanUp`/`EnterRoomDebug`), `Core/Nodes/NGame.cs` (`StartNewSingleplayerRun`/`ReturnToMainMenu`), `Core/Nodes/Debug/NSceneBootstrapper.cs`, `Core/DevConsole/ConsoleCommands/FightConsoleCmd.cs`, `Core/Nodes/Screens/RunHistoryScreen/`.
+
+### 8.1 Original spike plan (below) — superseded by 8.0 except for the empirical rung-3 step
+
+**The entire approach is dead if you can't launch a combat in isolation and tear it down without touching the real save.** The spike answers three yes/no questions: (Q1) can you start a combat from a context you fully control, (Q2) can you guarantee it persists nothing, (Q3) can you return to Run History cleanly. Strategy: instrument how the game *itself* enters combat, then replicate that from a throwaway context.
+
+### Setup the instruments first (~half a day)
+1. **Attach a debugger.** Put `steam_appid.txt` containing `2868840` in the StS2 dir; make a `.NET Executable` run config in Rider pointing at the game exe; enable **external source debugging** (Rider → Settings → Build, Execution, Deployment → Debugger → .Net Languages → "Enable external source debug"). Copy your `.pdb` next to the mod dll (add a `<Copy>` to the `CopyToModsFolderOnBuild` target).
+2. **Dev console.** With mods enabled, open with `` ` ``/`~`/`*`/`'`/`Shift+8`; `help` lists commands. Find the spawn-an-encounter command — it's your probe trigger.
+3. **Logs.** Enable Mod Configurations → BaseLib → "Open log window on startup". Mac log/save dir: `~/Library/Application Support/SlayTheSpire2/`.
+4. **Decompile** the game assemblies (see wiki Decompiling page). Anchor on the `CombatState` type (combat is organized around it — see Common Commands Cookbook). Grep for where `CombatState` is constructed and where the game transitions into the combat scene.
+
+### The experiment ladder (each rung answers one question)
+1. **Observe the real entry path (Q1).** Breakpoint where `CombatState` is constructed / the combat scene is entered. Trigger a fight via map or console. Walk the call stack and record **every field combat reads to initialize** (deck, relics, hp, potions, ascension, encounter→monster spawns). This list becomes the reconstructor's output contract. Highest-leverage hour in the project.
+2. **Replicate from a synthetic context (the real Q1 test).** Add one dev-console command to the mod that builds a throwaway run/player with hardcoded junk values and calls the same entry path — bypassing the map. Strategy (a): swap the throwaway into the global "current run" slot, run combat, swap the real one back. (Strategy (b), heavier: start an actual throwaway seeded run and inject state — fall back to this only if (a) fails.) Iterate on log exceptions until a hardcoded fight launches and is playable.
+3. **Prove nothing persists (Q2, empirically).** Hash + record mtimes of the save dir before. Launch the fight, **win** it. Diff: any `.run` changed? new history entry? rewards granted? map advanced? Repeat, **lose** it. If the save dir is byte-identical after both, Q2 is green. If something wrote, breakpoint the save/serialize and reward-grant paths to find who invoked them, and suppress/redirect to a throwaway.
+4. **Prove clean return (Q3).** From the synthetic combat, on **both** win and loss, force a scene transition back to the Run History screen (bypassing the normal combat→victory→map flow). Find the Godot scene/screen manager in decompiled source. Confirm Run History renders intact and "try again" relaunches without a restart.
+
+### Exit criteria
+- **Green light (Approach A validated):** a hardcoded fight launches from a throwaway context, plays to a win and a loss, leaves the save dir byte-identical both times, and returns to Run History both times with "try again" working.
+- **Red flags (reshape the plan):** combat can't init without a substantially-real run (map graph + serialized persistent player), OR winning unavoidably triggers a save-write/reward-grant you can't suppress. If so, pivot from "fake a context + launch combat" to "start a real throwaway run, inject reconstructed state, sandbox the persistence." Better to learn this now than after building the reconstructor.
+
+**Timebox: 2–3 focused days.** Deliverable is not polished code — it's a one-paragraph verdict on the four exit criteria, plus the §rung-1 list of fields combat reads (the reconstructor's input contract).
+
+> The combat-entry and scene-transition method/type names are build-specific (and may differ between v0.106 and v0.107), so get them firsthand via the rung-1 breakpoint walk rather than from memory.
+
+---
+
+## 9. Roadmap (durable — the task tool resets; trust this list)
+
+**Done:** ✅ §8 spike (static + empirical) · ✅ dev environment + build/test loop · ✅ macOS Sentry hang fix · ✅ `dojo <id>` launch command (scaffold with junk loadout) · ✅ **reconstructor** (`.run` + floor N → provenance-tagged loadout; `dojoreplay <run_file_path> <floor>` command; empirically validated — see §0 and §5a for build notes and the bugs it surfaced) · ✅ **RunReconstructor + decision-helper unit-test harness** (8 fixture tests + 5 decision-helper groups; see §5b) · ✅ **relic-visibility fix + combat-end interception** (`DojoLaunch` restructured, Harmony patches for win/loss + secondary-write suppression, `dojoagain`; empirically confirmed in-game — see §0 and §5c) · ✅ **potion reconstruction** (structural replay + verified event-only grant/removal cases, wired into `dojoreplay`/UI launch; 8 acceptance fixtures — see §5d) · ✅ **Dojo entry point + real-profile run browser + Completion screen** (PR #3; main-menu Dojo button, re-used `NRunHistory` over real profile, combat-floor confirm+launch, Try Again / Return to Dojo / Return to Main Menu; see §5e).
+
+**Next, in rough order:**
+1. ~~Reconstructor~~ — done, see §5a.
+2. ~~Intercept combat-end~~ — **done, see §5c/§5e.** Harmony patches skip the rewards screen/map/game-over screen on a Dojo win/loss and show `DojoCompletionScreen`; `dojoagain` still adds a dev-console "try again" path. Also bundled the relic-icon fix from §5a point 6, as planned (`DojoLaunch` restructured off `NGame.StartNewSingleplayerRun` onto the raw §8.0 sequence).
+2b. ~~Replace the Run-History redirect with a Completion screen~~ — **done, see §5e.** `DojoCombatEndInterceptor` now shows `DojoCompletionScreen` as a modal on top of combat. Buttons: **Try Again** (`DojoLaunch.TryAgain()`), **Return to Dojo** (`ReturnToMainMenu()` then `DojoRunBrowser.Open(game)`), **Return to Main Menu** (`ReturnToMainMenu()` only).
+3. ~~Suppress secondary writes~~ — **mostly done, see §5c.** `progress.save` (both the newly-found win-path leak and the previously-known loss-path leak) and `replays/latest.mcr` are patched/suppressed for Dojo runs. `prefs.save` traced to not actually be caused by combat end — left unpatched, flagged if it resurfaces.
+4. **Eligibility/resolve pass** — gate ineligible fights; doubles as validator (§6). **Partially built:** `Reconstruction/DojoContentEligibility.cs` + the `IDojoContentResolver` seam already exist and are unit-tested against DTO doubles (§5b). What's left: a live `ModelDb`-backed `IDojoContentResolver` implementation, and wiring `dojo`/`dojoreplay` to actually call `Validate(...)` and refuse ineligible fights instead of just letting `ModelDb.GetById` throw.
+5. ~~UI: Dojo entry point + run browser~~ — **first pass done, see §5e.** Main-menu Dojo button, real-profile `NRunHistory` reuse, floor-click confirm dialog, and UI launch path are merged. Remaining polish:
+   - Run-browser UX still inherits the base game's one-run-at-a-time paging; a custom searchable/filterable browser is a likely post-v1 improvement.
+   - Add visible/pleasant error states for "real profile has no runs", load failures, unsupported schema, modifier runs, multiplayer runs, and content-resolution failures. Some decisions are already modeled by `RunHistoryFileSelection`; the current UI mostly logs and/or silently omits.
+   - Do a full in-game smoke pass after a fresh Steam launch: main-menu Dojo → run history → combat floor confirm → replay → win/loss → all three Completion-screen buttons; include macOS screenshot shortcut to re-check the `<null>` tooltip mitigation.
+6. **Fast-follow** — loadout editor over remaining `assumed` fields (relic counter/prop state); optional repeatable seed; make modded Sentry fully silent (`TODO(telemetry)` in `SentryMacOsHangPatch.cs`).
+
+## 10. Open questions to resolve during build
+- ~~v1 potions: ship empty slots, or attempt potion-replay immediately?~~ **Resolved: potion replay implemented (2026-07-01), see §5d.** `DojoReplayConsoleCmd`'s mutate callback now grants the reconstructed potions. A live `ModelDb`-backed name resolver (vs. the current static table) remains a fast-follow (§9 item 6).
+- ~~Which `room_type` values exactly count as combat?~~ **Resolved: `monster`/`elite`/`boss`.** Confirmed against `SCHEMA.md`'s full enumeration (`room_type ∈ {monster, event, rest_site, elite, treasure, boss, shop}`) and covered by the combat-floor-detection tests in §5b (event-combat floors are still found by `monster_ids` presence, not `room_type`, per §6).
+- ~~Daily-run / modifier-bearing runs — in or out of v1?~~ **Resolved: out.** `RunHistoryFileSelection.cs`'s `ExcludeModifierRuns` defaults to `true`; modifier-bearing runs are classified `RunHistoryFileDecision.ModifierRun` and should be excluded/hidden by any custom browser or richer error-state UI (§9 item 5 follow-ups). The current first-pass `NRunHistory` reuse also filters floor-click replay eligibility so modifier-bearing runs cannot launch.
+- **Test TODOs:** add a negative fixture for multiplayer replay/file filtering using `1782788638.run`; add live `ModelDb` integration coverage for the eligibility resolver once the in-game resolver is wired; add `RunHistoryLoader`/`MigrationManager` integration coverage if a safe non-Godot load path appears; add false-merchant Foul Potion coverage if the corpus turns up a real fixture (current scan found merchant-shop usage but no `FOUL_POTION` + `EVENT.FAKE_MERCHANT`/trial-merchant overlap); add try-again immutability/retry-seed tests once replay requests are modeled; add a full in-game combat-end/save-suppression/Completion-screen smoke checklist now that the hooks and UI exist.
+- **Run-browser UX (future, post-v1):** v1 re-uses the game's `NRunHistory` screen, which only lets you **page through runs one at a time**. A player with a big history (this user has ~1070) will want a faster way to find a run — a scrollable/searchable/filterable list, sort by date/character/outcome, jump-to-run, etc. Deferred design question: build a custom multi-run browser on top of the real-profile `.run` files (the disk-based data source already supports it). Not a v1 blocker; noted so we don't forget the paging friction.
+
+## 11. References
+- Template wiki: Setup, Modding Basics, Testing and Debugging, Decompiling, Extracting Assets and Text, Common Commands Cookbook, Things to Note — `https://github.com/Alchyr/ModTemplate-StS2/wiki`
+- `runfiles/SCHEMA.md` (this project) — authoritative data-model reference.
+- Sample runs are contained in `./runfiles/*.run`
+- Decompiled game source in `./decompiled/sts2/` — primary anchor for combat-entry / scene / save code paths (see §8.0).
