@@ -85,6 +85,17 @@ public static class DojoReplayLauncher
                 ReconstructedLoadout loadout = RunReconstructor.Reconstruct(
                     run, globalFloor, startingDeck, startingRelics, startingHp, startingGold);
 
+                // Refuse the fight if it depends on content that no longer resolves (renamed/removed
+                // encounter/card/relic since this run was played, or content from an uninstalled mod - see
+                // CLAUDE.md §6). Thrown before any player mutation below, so DojoLaunch's existing
+                // mutate-failure recovery (RunManager.CleanUp(), no scene ever created) handles teardown.
+                DojoContentEligibilityResult eligibility =
+                    DojoContentEligibility.Validate(loadout, LiveDojoContentResolver.Instance);
+                if (!eligibility.IsEligible)
+                {
+                    throw new DojoContentEligibilityException(eligibility.MissingContent);
+                }
+
                 // Replace the auto-populated starting inventory with the reconstructed one. Cards use
                 // silent:true + one InvokeCardAddFinished() flush at the end (CardPile's intended pattern
                 // for a bulk rebuild — see NTopBarDeckButton, which only refreshes on CardAddFinished/
@@ -161,6 +172,11 @@ public static class DojoReplayLauncher
                     $"deck={loadout.Deck.Count} relics={loadout.Relics.Count} hp={loadout.CurrentHp}/{loadout.MaxHp} " +
                     $"gold={loadout.Gold} ascension={loadout.Ascension}.");
             });
+        }
+        catch (DojoContentEligibilityException e)
+        {
+            // Expected/user-facing refusal, not a bug - log just the message, no stack trace.
+            MainFile.Logger.Error("[STS2Dojo] " + e.Message);
         }
         catch (Exception e)
         {

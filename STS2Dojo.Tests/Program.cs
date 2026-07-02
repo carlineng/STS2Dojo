@@ -337,6 +337,11 @@ internal static class DecisionTestRunner
             ],
             result.MissingContent.Select(m => m.Kind + ":" + m.Id).ToArray(),
             "missing content list");
+
+        DojoContentEligibilityException exception = new(result.MissingContent);
+        Assert.True(exception.Message.Contains("Encounter:ENCOUNTER.SEAPUNK_WEAK")
+            && exception.Message.Contains("Relic:RELIC.SILKEN_TRESS"),
+            "eligibility exception message names the missing content");
     }
 
     private static void RunHistoryFileSelection()

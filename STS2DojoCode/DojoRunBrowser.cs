@@ -12,20 +12,36 @@ namespace STS2Dojo.STS2DojoCode;
 /// resolve their history directory from the LIVE value of <c>UserDataPathProvider.IsRunningModded</c> on
 /// every call — re-read on every button press, not cached — so flipping it to <c>false</c> for the duration
 /// the screen is open redirects it to the real profile's <c>.run</c> files with no patch needed on
-/// <c>SaveManager</c>/<c>NRunHistory</c> itself. The flag is restored via two independent hooks, because
-/// there are two independent ways the screen stops being open:
+/// <c>SaveManager</c>/<c>NRunHistory</c> itself. The flag is restored via three independent hooks:
 /// <list type="bullet">
 /// <item>Backing out of the screen pops it off the submenu stack, firing <c>NSubmenu.OnSubmenuClosed</c> —
 /// see <see cref="DojoRunHistoryFlagRestorePatch"/>.</item>
 /// <item>Confirming a floor launches straight into the fight, which replaces the main menu scene entirely
 /// via <c>NSceneContainer.SetCurrentScene</c> (it frees the old scene's children directly — see
 /// <c>NSceneContainer.SetCurrentScene</c> in the decompiled source) WITHOUT ever popping the submenu stack
-/// first, so <c>OnSubmenuClosed</c> never fires on this path. Without the second hook below, every
-/// successful replay launch would permanently leave the whole modded session reading/writing the real
-/// profile. See <see cref="DojoRunHistorySceneSwapRestorePatch"/>.</item>
+/// first, so <c>OnSubmenuClosed</c> never fires on this path. Without this hook, every successful replay
+/// launch would permanently leave the whole modded session reading/writing the real profile. See
+/// <see cref="DojoRunHistorySceneSwapRestorePatch"/>.</item>
+/// <item><b>Hard safety net, added after a real incident:</b> the first two hooks only cover the two ways
+/// <em>the Dojo itself</em> stops showing this screen. They don't cover the game quitting/restarting, or
+/// the player reaching an unrelated screen (e.g. Settings, to disable mods) that saves something on its own
+/// close, while this screen is still sitting open underneath — <c>NSettingsScreen.OnSubmenuClosed</c> calls
+/// <c>SaveManager.Instance.SavePrefsFile()</c> unconditionally on every close, independent of quitting.
+/// Either way, if <c>IsRunningModded</c> is still <c>false</c> when <em>any</em> profile-scoped save fires
+/// (progress, profile, or prefs), it writes the CURRENT PROCESS's in-memory, modded-profile data (loaded at
+/// launch) to the REAL profile's file — because the save PATH is resolved live from the flag, but the save
+/// DATA is always whatever's in memory. This is exactly what happened: reaching Settings from an
+/// unrestored Dojo browser and disabling mods silently overwrote the real profile's <c>progress.save</c>
+/// with the modded session's near-empty progress, zeroing <c>Wins</c>/<c>Losses</c> and making
+/// <c>SaveManager.IsCompendiumAvailable()</c> (literally <c>NumberOfRuns &gt; 0</c>) go false — the
+/// Compendium vanishing from the main menu was the symptom that led here. Rather than trying to enumerate
+/// every screen that might independently trigger a save, this hook patches the actual chokepoint: the three
+/// profile-scoped save methods on <see cref="SaveManager"/> themselves, forcing the flag back to true right
+/// before any of them runs, no matter who called it or why the flag was left false. See
+/// <see cref="DojoRunHistorySaveSafetyPatch"/>.</item>
 /// </list>
-/// Both hooks call the same <see cref="ConsumeRestorePending"/>, so whichever fires first wins and the
-/// other is a no-op.
+/// All hooks either call <see cref="ConsumeRestorePending"/> or set the flag directly; whichever fires
+/// first wins and the others are no-ops.
 /// </summary>
 public static class DojoRunBrowser
 {
@@ -108,5 +124,40 @@ public static class DojoRunHistorySceneSwapRestorePatch
         {
             UserDataPathProvider.IsRunningModded = true;
         }
+    }
+}
+
+/// <summary>Unconditional hard safety net — see the "Hard safety net" bullet on <see cref="DojoRunBrowser"/>'s
+/// class docs for the incident that motivated this. Patches the three profile-scoped save methods directly
+/// (the actual chokepoint every persistence path funnels through — <c>NGame.Quit()</c>,
+/// <c>NSettingsScreen.OnSubmenuClosed</c>, and anything else now or in the future) rather than trying to
+/// patch every possible caller. Deliberately does NOT check <see cref="DojoRunBrowser.ConsumeRestorePending"/>
+/// first (unlike the other two restore patches): in a modded session, <c>IsRunningModded</c> should always
+/// be <c>true</c> by the time anything saves, full stop, regardless of whether the Dojo run browser was ever
+/// opened this session or exactly how it was left. Forcing it here is always correct and never has a
+/// downside — it only ever prevents a modded session from writing to the real profile, never the
+/// reverse.</summary>
+[HarmonyPatch(typeof(SaveManager))]
+public static class DojoRunHistorySaveSafetyPatch
+{
+    [HarmonyPatch(nameof(SaveManager.SaveProgressFile))]
+    [HarmonyPrefix]
+    // ReSharper disable once UnusedMember.Global
+    public static void SaveProgressFilePrefix() => RestoreFlag();
+
+    [HarmonyPatch(nameof(SaveManager.SaveProfile))]
+    [HarmonyPrefix]
+    // ReSharper disable once UnusedMember.Global
+    public static void SaveProfilePrefix() => RestoreFlag();
+
+    [HarmonyPatch(nameof(SaveManager.SavePrefsFile))]
+    [HarmonyPrefix]
+    // ReSharper disable once UnusedMember.Global
+    public static void SavePrefsFilePrefix() => RestoreFlag();
+
+    private static void RestoreFlag()
+    {
+        DojoRunBrowser.ConsumeRestorePending();
+        UserDataPathProvider.IsRunningModded = true;
     }
 }
