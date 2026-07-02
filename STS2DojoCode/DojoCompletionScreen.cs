@@ -46,10 +46,6 @@ public partial class DojoCompletionScreen : Control, IScreenContext
             return;
         }
 
-        // Add to the live tree BEFORE configuring the buttons below: NPopupYesNoButton.SetText touches a
-        // private field only populated by the button's own _Ready()/ConnectSignals(), which Godot doesn't
-        // run until the (sub)tree actually enters the scene tree — which NModalContainer.Add does
-        // synchronously here, since NModalContainer is already inside the tree.
         modalContainer.Add(screen);
         screen.WireButtons();
     }
@@ -97,13 +93,31 @@ public partial class DojoCompletionScreen : Control, IScreenContext
 
     private void WireButtons()
     {
-        _tryAgainButton.SetText("Try Again");
-        _returnToDojoButton.SetText("Return to Dojo");
-        _returnToMainMenuButton.SetText("Return to Main Menu");
+        // NOT NPopupYesNoButton.SetText() — it resolves its target Label via a scene-unique name lookup
+        // ("%Label") inside _Ready(), which doesn't reliably re-resolve for a node that was runtime-
+        // duplicated rather than freshly instantiated from a scene (empirically confirmed in-game: all
+        // three buttons rendered the template's baked-in "Yes" text, silently). Finding the label by
+        // structural type within OUR OWN duplicated subtree sidesteps that entirely.
+        SetButtonLabel(_tryAgainButton, "Try Again");
+        SetButtonLabel(_returnToDojoButton, "Return to Dojo");
+        SetButtonLabel(_returnToMainMenuButton, "Return to Main Menu");
 
         _tryAgainButton.Released += _ => TaskHelper.RunSafely(OnTryAgain());
         _returnToDojoButton.Released += _ => TaskHelper.RunSafely(OnReturnToDojo());
         _returnToMainMenuButton.Released += _ => TaskHelper.RunSafely(OnReturnToMainMenu());
+    }
+
+    private static void SetButtonLabel(Node root, string text)
+    {
+        if (root is Label label)
+        {
+            label.Text = text;
+            return;
+        }
+        foreach (Node child in root.GetChildren())
+        {
+            SetButtonLabel(child, text);
+        }
     }
 
     private static async Task OnTryAgain()
