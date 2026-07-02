@@ -65,14 +65,12 @@ public class DojoReplayConsoleCmd : AbstractConsoleCmd
         {
             return new CmdResult(success: false, "Failed to load/resolve floor " + globalFloor + ": " + e.Message);
         }
-        encounter.DebugRandomizeRng();
-
-        Task task = LaunchReplay(run, globalFloor, encounter);
+        Task task = LaunchReplay(run, globalFloor, encounter.Id);
         return new CmdResult(task, success: true,
             $"Dojo replay: floor {globalFloor} -> '{encounter.Id.Entry}'. Reconstructing loadout and launching...");
     }
 
-    private static async Task LaunchReplay(RunHistory run, int globalFloor, EncounterModel encounter)
+    private static async Task LaunchReplay(RunHistory run, int globalFloor, ModelId encounterId)
     {
         try
         {
@@ -84,60 +82,75 @@ public class DojoReplayConsoleCmd : AbstractConsoleCmd
             }
 
             CharacterModel character = ModelDb.GetById<CharacterModel>(run.Players.Single().Character);
-            RunState runState = await DojoLaunch.StartThrowawayRun(game, character, run.Ascension);
-            Player player = runState.Players[0];
 
-            // Snapshot the TRUE ascension-adjusted starting inventory (e.g. Ascender's Bane at high
-            // ascension) that StartThrowawayRun just auto-populated, before we replace it.
-            List<SerializableCard> startingDeck = player.Deck.Cards.Select(c => c.ToSerializable()).ToList();
-            List<SerializableRelic> startingRelics = player.Relics.Select(r => r.ToSerializable()).ToList();
-            int startingHp = player.Creature.MaxHp;
-            int startingGold = player.Gold;
-
-            ReconstructedLoadout loadout = RunReconstructor.Reconstruct(
-                run, globalFloor, startingDeck, startingRelics, startingHp, startingGold);
-
-            // Replace the auto-populated starting inventory with the reconstructed one. Cards use
-            // silent:true + one InvokeCardAddFinished() flush at the end (CardPile's intended pattern for
-            // a bulk rebuild — see NTopBarDeckButton, which only refreshes on CardAddFinished/
-            // CardRemoveFinished, not the per-card CardAdded event). Relics/potions have no such batching
-            // hook (NRelicInventory listens directly to RelicObtained/RelicRemoved), so those go non-silent.
-            player.Deck.Clear(silent: true);
-            foreach (RelicModel relic in player.Relics.ToList())
+            // The mutate callback runs before the run's scene is created (see DojoLaunch.cs's class docs)
+            // — this is what fixes the previously-invisible relic icons (CLAUDE.md §5a point 6).
+            await DojoLaunch.LaunchThrowawayRun(game, character, run.Ascension, encounterId, mutate: runState =>
             {
-                player.RemoveRelicInternal(relic);
-            }
-            foreach (PotionModel potion in player.Potions.ToList())
-            {
-                player.DiscardPotionInternal(potion);
-            }
+                Player player = runState.Players[0];
 
-            foreach (ProvenancedCard pc in loadout.Deck)
-            {
-                // Must go through RunState.LoadCard (not CardModel.FromSerializable directly) — it's what
-                // sets CardModel.Owner and registers the card with the run. Skipping it leaves Owner null,
-                // which NREs the first time the hook system walks the deck (RunState.Contains).
-                CardModel card = runState.LoadCard(pc.Card, player);
-                player.Deck.AddInternal(card, index: -1, silent: true);
-            }
-            player.Deck.InvokeCardAddFinished();
+                // Snapshot the TRUE ascension-adjusted starting inventory (e.g. Ascender's Bane at high
+                // ascension) that LaunchThrowawayRun just auto-populated, before we replace it.
+                List<SerializableCard> startingDeck = player.Deck.Cards.Select(c => c.ToSerializable()).ToList();
+                List<SerializableRelic> startingRelics = player.Relics.Select(r => r.ToSerializable()).ToList();
+                int startingHp = player.Creature.MaxHp;
+                int startingGold = player.Gold;
 
-            foreach (ProvenancedRelic pr in loadout.Relics)
-            {
-                player.AddRelicInternal(RelicModel.FromSerializable(pr.Relic));
-            }
-            // Potions ship empty in v1 (Assumed — see CLAUDE.md §10); already cleared above.
+                ReconstructedLoadout loadout = RunReconstructor.Reconstruct(
+                    run, globalFloor, startingDeck, startingRelics, startingHp, startingGold);
 
-            player.Gold = loadout.Gold;
-            player.Creature.SetMaxHpInternal(loadout.MaxHp);
-            player.Creature.SetCurrentHpInternal(loadout.CurrentHp);
+                // Replace the auto-populated starting inventory with the reconstructed one. Cards use
+                // silent:true + one InvokeCardAddFinished() flush at the end (CardPile's intended pattern
+                // for a bulk rebuild — see NTopBarDeckButton, which only refreshes on CardAddFinished/
+                // CardRemoveFinished, not the per-card CardAdded event). Relics/potions have no such
+                // batching hook, but silent:true is still passed for consistency — no UI exists to
+                // receive RelicObtained/RelicRemoved/PotionUsed events yet at this point in the sequence
+                // (the run's scene isn't created until after this callback returns), so it's a no-op today,
+                // just future-proofing against that changing.
+                player.Deck.Clear(silent: true);
+                foreach (RelicModel relic in player.Relics.ToList())
+                {
+                    player.RemoveRelicInternal(relic, silent: true);
+                }
+                foreach (PotionModel potion in player.Potions.ToList())
+                {
+                    player.DiscardPotionInternal(potion, silent: true);
+                }
 
-            MainFile.Logger.Info(
-                $"[STS2Dojo] Replay launch: '{encounter.Id.Entry}' character={character.Id.Entry} " +
-                $"deck={loadout.Deck.Count} relics={loadout.Relics.Count} hp={loadout.CurrentHp}/{loadout.MaxHp} " +
-                $"gold={loadout.Gold} ascension={loadout.Ascension}.");
+                foreach (ProvenancedCard pc in loadout.Deck)
+                {
+                    // Must go through RunState.LoadCard (not CardModel.FromSerializable directly) — it's
+                    // what sets CardModel.Owner and registers the card with the run. Skipping it leaves
+                    // Owner null, which NREs the first time the hook system walks the deck
+                    // (RunState.Contains).
+                    CardModel card = runState.LoadCard(pc.Card, player);
+                    player.Deck.AddInternal(card, index: -1, silent: true);
+                }
+                player.Deck.InvokeCardAddFinished();
 
-            await DojoLaunch.EnterEncounter(encounter);
+                foreach (ProvenancedRelic pr in loadout.Relics)
+                {
+                    // Deliberately NOT calling RelicModel.AfterObtained() here. AfterObtained() applies a
+                    // relic's one-time PICKUP effect (e.g. Pear/Mango permanent Max HP boosts,
+                    // Whetstone/GnarledHammer one-time card upgrades, and several relics that pop an
+                    // interactive card-selection/reward screen). Every reconstructed relic here was
+                    // already picked up earlier in the ORIGINAL run, and its effect is already baked into
+                    // the run file's logged HP/gold/card-upgrade values that RunReconstructor reads
+                    // directly — calling AfterObtained() again would double-apply stat effects and pop
+                    // inappropriate UI prompts mid-launch. This is intentional, not a missed call.
+                    player.AddRelicInternal(RelicModel.FromSerializable(pr.Relic), index: -1, silent: true);
+                }
+                // Potions ship empty in v1 (Assumed — see CLAUDE.md §10); already cleared above.
+
+                player.Gold = loadout.Gold;
+                player.Creature.SetMaxHpInternal(loadout.MaxHp);
+                player.Creature.SetCurrentHpInternal(loadout.CurrentHp);
+
+                MainFile.Logger.Info(
+                    $"[STS2Dojo] Replay launch: '{encounterId.Entry}' character={character.Id.Entry} " +
+                    $"deck={loadout.Deck.Count} relics={loadout.Relics.Count} hp={loadout.CurrentHp}/{loadout.MaxHp} " +
+                    $"gold={loadout.Gold} ascension={loadout.Ascension}.");
+            });
         }
         catch (Exception e)
         {
