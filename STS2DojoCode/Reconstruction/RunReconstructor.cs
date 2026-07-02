@@ -39,8 +39,10 @@ public static class RunReconstructor
         IReadOnlyList<SerializableRelic> startingRelics,
         int startingHp,
         int startingGold,
-        ulong playerId = 1)
+        ulong playerId = 1,
+        IPotionNameResolver? potionNameResolver = null)
     {
+        IPotionNameResolver potionNames = potionNameResolver ?? KnownPotionNames.Instance;
         if (!RunHistoryQueries.IsSinglePlayer(run, playerId))
         {
             throw new InvalidOperationException(
@@ -59,6 +61,7 @@ public static class RunReconstructor
         List<ProvenancedRelic> relics = startingRelics
             .Select(r => new ProvenancedRelic(r, Provenance.Derived))
             .ToList();
+        List<ProvenancedPotion> potions = [];
 
         int currentHp = startingHp;
         int maxHp = startingHp;
@@ -128,6 +131,103 @@ public static class RunReconstructor
             {
                 RemoveOneMatchingRelic(relics, removedId);
             }
+
+            // Potions — lossy but partially recoverable (CLAUDE.md §5/§10). potion_choices(picked) is the
+            // sole authoritative gain source: bought_potions is NOT applied — a corpus scan of all 531
+            // single-player files found every one of 216 bought_potions entries already duplicated by a
+            // picked potion_choices entry on the same floor (0 counterexamples), the same redundancy
+            // pattern as bought_relics/card_choices above. potion_used/potion_discarded are removals; both
+            // are logged by every call that goes through PotionCmd.Discard / PotionModel.OnUseWrapper.
+            foreach (ModelChoiceHistoryEntry potionChoice in ps.PotionChoices)
+            {
+                if (potionChoice.wasPicked)
+                {
+                    potions.Add(new ProvenancedPotion(potionChoice.choice!, Provenance.Replayed));
+                }
+            }
+
+            foreach (ModelId usedId in ps.PotionUsed)
+            {
+                RemoveOneMatchingPotion(potions, usedId);
+            }
+
+            foreach (ModelId discardedId in ps.PotionDiscarded)
+            {
+                RemoveOneMatchingPotion(potions, discardedId);
+            }
+
+            // Some event outcomes grant/remove a potion via Player.AddPotionInternal/RemovePotionInternal
+            // directly, bypassing PotionCmd.TryToProcure/Discard — so there's no structural trace at all,
+            // only the event's LocString variables. A corpus scan found direction (grant vs removal) is
+            // NOT reliably inferable from "was it tracked structurally elsewhere" (Ranwid the Elder's
+            // potion-for-gold option leaves an untracked REMOVAL with the exact same shape as an untracked
+            // GRANT), so we key off the specific event name (event_choices[].title.key's prefix before
+            // ".pages.") for the ones verified end-to-end against the corpus:
+            //   DROWNING_BEACON   (variable "Potion")           -> grant
+            //   POTION_COURIER    (variable "FoulPotions")      -> grant of Foul Potion, count = value
+            //   RANWID_THE_ELDER  (variable "Potion")           -> removal
+            //   STONE_OF_ALL_TIME (variable "DrinkRandomPotion")-> removal
+            // Any other event name, or a display name KnownPotionNames doesn't recognize, is silently
+            // skipped — CLAUDE.md §3 explicitly accepts silent inaccuracy here over guessing.
+            foreach (EventOptionHistoryEntry choiceEvent in ps.EventChoices)
+            {
+                if (choiceEvent.Variables == null)
+                {
+                    continue;
+                }
+
+                string eventName = choiceEvent.Title.LocEntryKey.Split('.')[0];
+
+                if (eventName == "POTION_COURIER" &&
+                    choiceEvent.Variables.TryGetValue("FoulPotions", out object? foulPotionsVar))
+                {
+                    ModelId foulPotionId = ModelId.Deserialize("POTION.FOUL_POTION");
+                    bool alreadyTracked = ps.PotionChoices.Any(c => c.wasPicked && c.choice == foulPotionId);
+                    if (!alreadyTracked && TryGetEventVariableCount(foulPotionsVar, out int foulCount))
+                    {
+                        for (int n = 0; n < foulCount; n++)
+                        {
+                            potions.Add(new ProvenancedPotion(foulPotionId, Provenance.Replayed));
+                        }
+                    }
+                }
+
+                if (eventName == "DROWNING_BEACON" &&
+                    choiceEvent.Variables.TryGetValue("Potion", out object? grantVar) &&
+                    TryGetEventVariableString(grantVar, out string? grantedName) &&
+                    potionNames.TryResolveDisplayName(grantedName!, out ModelId grantedId))
+                {
+                    bool alreadyTracked = ps.PotionChoices.Any(c => c.wasPicked && c.choice == grantedId);
+                    if (!alreadyTracked)
+                    {
+                        potions.Add(new ProvenancedPotion(grantedId, Provenance.Replayed));
+                    }
+                }
+
+                if (eventName == "RANWID_THE_ELDER" &&
+                    choiceEvent.Variables.TryGetValue("Potion", out object? tradeVar) &&
+                    TryGetEventVariableString(tradeVar, out string? tradedName) &&
+                    potionNames.TryResolveDisplayName(tradedName!, out ModelId tradedId))
+                {
+                    bool alreadyTracked = ps.PotionUsed.Contains(tradedId) || ps.PotionDiscarded.Contains(tradedId);
+                    if (!alreadyTracked)
+                    {
+                        RemoveOneMatchingPotion(potions, tradedId);
+                    }
+                }
+
+                if (eventName == "STONE_OF_ALL_TIME" &&
+                    choiceEvent.Variables.TryGetValue("DrinkRandomPotion", out object? drinkVar) &&
+                    TryGetEventVariableString(drinkVar, out string? drunkName) &&
+                    potionNames.TryResolveDisplayName(drunkName!, out ModelId drunkId))
+                {
+                    bool alreadyTracked = ps.PotionUsed.Contains(drunkId) || ps.PotionDiscarded.Contains(drunkId);
+                    if (!alreadyTracked)
+                    {
+                        RemoveOneMatchingPotion(potions, drunkId);
+                    }
+                }
+            }
         }
 
         return new ReconstructedLoadout
@@ -140,7 +240,8 @@ public static class RunReconstructor
             Deck = deck,
             Relics = relics,
             EncounterId = encounterId,
-            MonsterIds = combatRoom.MonsterIds.ToList()
+            MonsterIds = combatRoom.MonsterIds.ToList(),
+            Potions = potions
         };
     }
 
@@ -228,5 +329,43 @@ public static class RunReconstructor
         {
             relics.RemoveAt(index);
         }
+    }
+
+    private static void RemoveOneMatchingPotion(List<ProvenancedPotion> potions, ModelId id)
+    {
+        int index = potions.FindIndex(p => p.PotionId == id);
+        if (index >= 0)
+        {
+            potions.RemoveAt(index);
+        }
+    }
+
+    /// <summary>
+    /// An event's LocString variable value is declared as <c>object</c> (see
+    /// EventOptionHistoryEntry.Variables) because at runtime, after the game's own JSON converter
+    /// deserializes it, its concrete type is a game-internal DynamicVar/StringVar — not something this
+    /// mod's assembly references or can pattern-match on directly, and not something the offline test
+    /// project's DTO doubles can reasonably mimic by type identity either. Both sides instead expose the
+    /// same *property names* (StringValue on StringVar; BaseValue on DynamicVar, which StringVar also
+    /// inherits), so reflection is the one bridge that works unmodified against both the real game types
+    /// and the test doubles.
+    /// </summary>
+    private static bool TryGetEventVariableString(object variable, out string? value)
+    {
+        value = variable.GetType().GetProperty("StringValue")?.GetValue(variable) as string;
+        return !string.IsNullOrEmpty(value);
+    }
+
+    private static bool TryGetEventVariableCount(object variable, out int count)
+    {
+        object? raw = variable.GetType().GetProperty("BaseValue")?.GetValue(variable);
+        if (raw is decimal d)
+        {
+            count = (int)d;
+            return count > 0;
+        }
+
+        count = 0;
+        return false;
     }
 }

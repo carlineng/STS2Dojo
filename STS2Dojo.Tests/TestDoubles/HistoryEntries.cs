@@ -1,4 +1,6 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
+using MegaCrit.Sts2.Core.Localization;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Saves.Runs;
@@ -75,6 +77,58 @@ public sealed class PlayerMapPointHistoryEntry
 
     [JsonPropertyName("potion_discarded")]
     public List<ModelId> PotionDiscarded { get; set; } = [];
+
+    [JsonPropertyName("event_choices")]
+    public List<EventOptionHistoryEntry> EventChoices { get; set; } = [];
+}
+
+public sealed class EventOptionHistoryEntry
+{
+    [JsonPropertyName("title")]
+    public LocString Title { get; set; } = new();
+
+    [JsonPropertyName("variables")]
+    [JsonConverter(typeof(EventVariablesJsonConverter))]
+    public Dictionary<string, object>? Variables { get; set; }
+}
+
+/// <summary>Mirrors the two fields RunReconstructor's reflection-based readers look for on the game's
+/// real DynamicVar/StringVar types (see RunReconstructor.TryGetEventVariableString/Count) — same
+/// property names, different concrete type, since the real types live in an assembly this test project
+/// deliberately never references (see STS2Dojo.Tests/Program.cs's TestRunHistoryLoader notes).</summary>
+public sealed class EventVariable
+{
+    public string? StringValue { get; set; }
+    public decimal BaseValue { get; set; }
+}
+
+/// <summary>Reads the raw run-file shape (<c>{"type":..,"decimal_value":..,"bool_value":..,
+/// "string_value":..}</c> per variable) directly into <see cref="EventVariable"/>, mirroring what the
+/// real game's LocStringVariablesJsonConverter + SerializableDynamicVar.ToDynamicVar do together
+/// (minus the Bool/plain-String/Decimal cases, which no potion event variable uses).</summary>
+public sealed class EventVariablesJsonConverter : JsonConverter<Dictionary<string, object>?>
+{
+    public override Dictionary<string, object>? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        using JsonDocument document = JsonDocument.ParseValue(ref reader);
+        Dictionary<string, object> result = new();
+        foreach (JsonProperty property in document.RootElement.EnumerateObject())
+        {
+            JsonElement value = property.Value;
+            string? stringValue = value.TryGetProperty("string_value", out JsonElement sv) && sv.ValueKind == JsonValueKind.String
+                ? sv.GetString()
+                : null;
+            decimal decimalValue = value.TryGetProperty("decimal_value", out JsonElement dv) && dv.ValueKind == JsonValueKind.Number
+                ? dv.GetDecimal()
+                : 0m;
+            result[property.Name] = new EventVariable { StringValue = stringValue, BaseValue = decimalValue };
+        }
+
+        return result;
+    }
+
+    public override void Write(Utf8JsonWriter writer, Dictionary<string, object>? value, JsonSerializerOptions options) =>
+        throw new NotSupportedException("Test double is read-only.");
 }
 
 public sealed class CardTransformationHistoryEntry

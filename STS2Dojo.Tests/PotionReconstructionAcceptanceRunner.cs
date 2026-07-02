@@ -10,20 +10,16 @@ internal sealed record PotionReconstructionFixture(
     string[] ExpectedPotions,
     string[]? RequiredRelics = null);
 
+/// <summary>
+/// Potion reconstruction acceptance tests (see CLAUDE.md §5/§9/§10). Covers both the structural replay
+/// path (potion_choices/potion_used/potion_discarded) and the event-only grant/removal path (Drowning
+/// Beacon, Potion Courier, Ranwid the Elder, Stone of All Time — see RunReconstructor's per-floor event
+/// handling and PotionNameResolver.cs), each fixture hand-traced against the actual run file.
+/// </summary>
 internal static class PotionReconstructionAcceptanceRunner
 {
-    private const string OptInEnvVar = "STS2DOJO_RUN_POTION_ACCEPTANCE";
-
-    public static void RunIfRequested()
+    public static void Run()
     {
-        if (Environment.GetEnvironmentVariable(OptInEnvVar) != "1")
-        {
-            Console.WriteLine();
-            Console.WriteLine(
-                $"SKIP potion reconstruction acceptance tests (set {OptInEnvVar}=1 to run; expected to fail until potion replay is implemented).");
-            return;
-        }
-
         PotionReconstructionFixture[] fixtures =
         [
             new(
@@ -62,13 +58,50 @@ internal static class PotionReconstructionAcceptanceRunner
                     "POTION.FOUL_POTION"
                 ]),
             new(
+                // Corrected from the original placeholder's ["ENERGY_POTION","POWER_POTION"]: that
+                // predated any implementation and missed floor 3's untracked Drowning Beacon Glowwater
+                // Potion grant (verified: no potion_used/potion_discarded/final-snapshot entry for it
+                // anywhere in this file — it's a genuine still-held potion, not a bug).
                 Name: "Foul Potions used at merchant and bought potion is not double-counted",
                 RunFile: "1778868022.run",
                 GlobalFloor: 31,
                 ExpectedPotions:
                 [
+                    "POTION.GLOWWATER_POTION",
                     "POTION.ENERGY_POTION",
                     "POTION.POWER_POTION"
+                ]),
+            new(
+                Name: "Drowning Beacon event-only grant resolved by display name",
+                RunFile: "1782178743.run",
+                GlobalFloor: 14,
+                ExpectedPotions:
+                [
+                    "POTION.STRENGTH_POTION",
+                    "POTION.POWER_POTION",
+                    "POTION.GLOWWATER_POTION"
+                ]),
+            new(
+                Name: "Potion Courier Ransack grants Foul Potions with zero structural trace",
+                RunFile: "1779159270.run",
+                GlobalFloor: 25,
+                ExpectedPotions:
+                [
+                    "POTION.CURE_ALL",
+                    "POTION.ATTACK_POTION",
+                    "POTION.FOUL_POTION",
+                    "POTION.FOUL_POTION",
+                    "POTION.FOUL_POTION"
+                ]),
+            new(
+                Name: "Stone of All Time removes a held potion with zero structural trace",
+                RunFile: "1777590946.run",
+                GlobalFloor: 21,
+                ExpectedPotions:
+                [
+                    "POTION.SPEED_POTION",
+                    "POTION.SWIFT_POTION",
+                    "POTION.FORTIFIER"
                 ])
         ];
 

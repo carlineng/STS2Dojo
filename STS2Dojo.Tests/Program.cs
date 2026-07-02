@@ -138,7 +138,7 @@ TestRunner.Run(
         RequiredRelics: ["RELIC.CRACKED_CORE", "RELIC.WAR_PAINT"]));
 
 DecisionTestRunner.Run();
-PotionReconstructionAcceptanceRunner.RunIfRequested();
+PotionReconstructionAcceptanceRunner.Run();
 
 internal sealed record ReconstructorFixture(
     string Name,

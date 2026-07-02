@@ -140,7 +140,21 @@ public class DojoReplayConsoleCmd : AbstractConsoleCmd
                     // inappropriate UI prompts mid-launch. This is intentional, not a missed call.
                     player.AddRelicInternal(RelicModel.FromSerializable(pr.Relic), index: -1, silent: true);
                 }
-                // Potions ship empty in v1 (Assumed — see CLAUDE.md §10); already cleared above.
+
+                // Grow potion slots to fit the reconstructed inventory if needed (e.g. a run-in-progress
+                // potion belt upgrade isn't recoverable — see CLAUDE.md §5 — so we just make sure
+                // whatever RunReconstructor found actually fits, rather than silently dropping potions
+                // past the throwaway player's default 3 slots).
+                if (loadout.Potions.Count > player.MaxPotionCount)
+                {
+                    player.AddToMaxPotionCount(loadout.Potions.Count - player.MaxPotionCount);
+                }
+
+                foreach (ProvenancedPotion pp in loadout.Potions)
+                {
+                    player.AddPotionInternal(PotionModel.FromSerializable(new SerializablePotion { Id = pp.PotionId }),
+                        slotIndex: -1, silent: true);
+                }
 
                 player.Gold = loadout.Gold;
                 player.Creature.SetMaxHpInternal(loadout.MaxHp);
