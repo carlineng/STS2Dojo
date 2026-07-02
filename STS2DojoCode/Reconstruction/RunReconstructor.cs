@@ -32,6 +32,22 @@ public static class RunReconstructor
     /// Ascender's Bane curse at high ascension) is only known once the game has actually created a player
     /// for that character+ascension — <c>CharacterModel.StartingDeck</c> alone doesn't include it.
     /// </summary>
+    /// <summary>Base potion slot count before any ascension/relic adjustment (Player.initialMaxPotionSlotCount).</summary>
+    private const int BasePotionSlots = 3;
+
+    /// <summary>Ascension level at which "Tight Belt" kicks in (AscensionLevel.TightBelt = 4), permanently
+    /// reducing max potion slots by 1 for the whole run (AscensionManager.ApplyEffectsTo).</summary>
+    private const int TightBeltAscension = 4;
+
+    /// <summary>Relics that grant a one-time, permanent max-potion-slot increase on pickup
+    /// (RelicModel.AfterObtained -> PlayerCmd.GainMaxPotionCount), keyed by the exact bonus each grants.</summary>
+    private static readonly Dictionary<string, int> PotionSlotGrantingRelics = new()
+    {
+        ["RELIC.POTION_BELT"] = 2,
+        ["RELIC.ALCHEMICAL_COFFER"] = 4,
+        ["RELIC.PHIAL_HOLSTER"] = 1
+    };
+
     public static ReconstructedLoadout Reconstruct(
         RunHistory run,
         int globalFloor,
@@ -39,10 +55,8 @@ public static class RunReconstructor
         IReadOnlyList<SerializableRelic> startingRelics,
         int startingHp,
         int startingGold,
-        ulong playerId = 1,
-        IPotionNameResolver? potionNameResolver = null)
+        ulong playerId = 1)
     {
-        IPotionNameResolver potionNames = potionNameResolver ?? KnownPotionNames.Instance;
         if (!RunHistoryQueries.IsSinglePlayer(run, playerId))
         {
             throw new InvalidOperationException(
@@ -62,6 +76,7 @@ public static class RunReconstructor
             .Select(r => new ProvenancedRelic(r, Provenance.Derived))
             .ToList();
         List<ProvenancedPotion> potions = [];
+        int maxPotionSlots = BasePotionSlots - (run.Ascension >= TightBeltAscension ? 1 : 0);
 
         int currentHp = startingHp;
         int maxHp = startingHp;
@@ -124,6 +139,17 @@ public static class RunReconstructor
                 {
                     relics.Add(new ProvenancedRelic(
                         new SerializableRelic { Id = choice.choice, FloorAddedToDeck = floorIdx }, Provenance.Replayed));
+
+                    // Potion Belt/Alchemical Coffer/Phial Holster grant a one-time permanent slot increase
+                    // via AfterObtained() on pickup, which the reconstructor deliberately never calls (see
+                    // the "Deliberately NOT calling RelicModel.AfterObtained()" note at the launch site) —
+                    // their effect on HP/gold/deck is already baked into the run's logged values, but a
+                    // *slot count* has no such log to read back from, so it's tracked here instead.
+                    if (choice.choice != null &&
+                        PotionSlotGrantingRelics.TryGetValue(choice.choice.ToString(), out int slotBonus))
+                    {
+                        maxPotionSlots += slotBonus;
+                    }
                 }
             }
 
@@ -132,12 +158,34 @@ public static class RunReconstructor
                 RemoveOneMatchingRelic(relics, removedId);
             }
 
-            // Potions — lossy but partially recoverable (CLAUDE.md §5/§10). potion_choices(picked) is the
-            // sole authoritative gain source: bought_potions is NOT applied — a corpus scan of all 531
-            // single-player files found every one of 216 bought_potions entries already duplicated by a
-            // picked potion_choices entry on the same floor (0 counterexamples), the same redundancy
-            // pattern as bought_relics/card_choices above. potion_used/potion_discarded are removals; both
-            // are logged by every call that goes through PotionCmd.Discard / PotionModel.OnUseWrapper.
+            // Potions. potion_choices(picked) is the sole authoritative gain source: bought_potions is NOT
+            // applied — a corpus scan of all 531 single-player files found every one of 216 bought_potions
+            // entries already duplicated by a picked potion_choices entry on the same floor (0
+            // counterexamples), the same redundancy pattern as bought_relics/card_choices above.
+            // potion_used/potion_discarded are removals; both are logged by every call that goes through
+            // PotionCmd.Discard / PotionModel.OnUseWrapper.
+            //
+            // Event-driven potion grants/removals (Drowning Beacon, Potion Courier, Ranwid the Elder,
+            // Stone of All Time) were investigated as a possible additional source, since their
+            // event_choices[].variables mention a potion by name. They turned out to need NO special
+            // handling: every one of their potion-touching options (Drowning Beacon's Bottle, Potion
+            // Courier's Grab Potions, Ranwid's Potion option, Stone of All Time's Lift) goes through
+            // PotionCmd.TryToProcure/Discard just like any other potion gain/loss, so it's already fully
+            // captured by potion_choices/potion_used/potion_discarded above — confirmed by cross-checking
+            // every corpus occurrence against the *specific option chosen* (100% structurally covered
+            // whenever a potion was actually touched). The `variables` dict is populated for ALL of an
+            // event's possible options at generation time regardless of which one the player picks (it's
+            // needed to render every option's hover text), so a naive check keyed on the event's name alone
+            // — rather than the chosen option — produces false positives: e.g. Drowning Beacon's "Potion"
+            // variable is present even when the player picks Climb (gains a relic, HP loss, no potion at
+            // all) or Ranwid's "Potion" variable is present even when Gold or Relic was chosen. An earlier
+            // version of this reconstructor keyed on event name only and generated exactly these
+            // false-positive grants/removals (caught via an in-game potion-slot-count mismatch — see the
+            // STS2 Dojo session that removed this). Potion Courier's Ransack option is the one genuine
+            // gap: it grants ONE random uncommon-rarity potion via base.Rng — true combat-adjacent RNG,
+            // unrecoverable from the log (same as combat RNG generally, CLAUDE.md §5) — so on the rare
+            // occasion it isn't picked up by potion_choices (e.g. declined because slots were full), it's
+            // correctly left unresolved rather than guessed.
             foreach (ModelChoiceHistoryEntry potionChoice in ps.PotionChoices)
             {
                 if (potionChoice.wasPicked)
@@ -155,79 +203,6 @@ public static class RunReconstructor
             {
                 RemoveOneMatchingPotion(potions, discardedId);
             }
-
-            // Some event outcomes grant/remove a potion via Player.AddPotionInternal/RemovePotionInternal
-            // directly, bypassing PotionCmd.TryToProcure/Discard — so there's no structural trace at all,
-            // only the event's LocString variables. A corpus scan found direction (grant vs removal) is
-            // NOT reliably inferable from "was it tracked structurally elsewhere" (Ranwid the Elder's
-            // potion-for-gold option leaves an untracked REMOVAL with the exact same shape as an untracked
-            // GRANT), so we key off the specific event name (event_choices[].title.key's prefix before
-            // ".pages.") for the ones verified end-to-end against the corpus:
-            //   DROWNING_BEACON   (variable "Potion")           -> grant
-            //   POTION_COURIER    (variable "FoulPotions")      -> grant of Foul Potion, count = value
-            //   RANWID_THE_ELDER  (variable "Potion")           -> removal
-            //   STONE_OF_ALL_TIME (variable "DrinkRandomPotion")-> removal
-            // Any other event name, or a display name KnownPotionNames doesn't recognize, is silently
-            // skipped — CLAUDE.md §3 explicitly accepts silent inaccuracy here over guessing.
-            foreach (EventOptionHistoryEntry choiceEvent in ps.EventChoices)
-            {
-                if (choiceEvent.Variables == null)
-                {
-                    continue;
-                }
-
-                string eventName = choiceEvent.Title.LocEntryKey.Split('.')[0];
-
-                if (eventName == "POTION_COURIER" &&
-                    choiceEvent.Variables.TryGetValue("FoulPotions", out object? foulPotionsVar))
-                {
-                    ModelId foulPotionId = ModelId.Deserialize("POTION.FOUL_POTION");
-                    bool alreadyTracked = ps.PotionChoices.Any(c => c.wasPicked && c.choice == foulPotionId);
-                    if (!alreadyTracked && TryGetEventVariableCount(foulPotionsVar, out int foulCount))
-                    {
-                        for (int n = 0; n < foulCount; n++)
-                        {
-                            potions.Add(new ProvenancedPotion(foulPotionId, Provenance.Replayed));
-                        }
-                    }
-                }
-
-                if (eventName == "DROWNING_BEACON" &&
-                    choiceEvent.Variables.TryGetValue("Potion", out object? grantVar) &&
-                    TryGetEventVariableString(grantVar, out string? grantedName) &&
-                    potionNames.TryResolveDisplayName(grantedName!, out ModelId grantedId))
-                {
-                    bool alreadyTracked = ps.PotionChoices.Any(c => c.wasPicked && c.choice == grantedId);
-                    if (!alreadyTracked)
-                    {
-                        potions.Add(new ProvenancedPotion(grantedId, Provenance.Replayed));
-                    }
-                }
-
-                if (eventName == "RANWID_THE_ELDER" &&
-                    choiceEvent.Variables.TryGetValue("Potion", out object? tradeVar) &&
-                    TryGetEventVariableString(tradeVar, out string? tradedName) &&
-                    potionNames.TryResolveDisplayName(tradedName!, out ModelId tradedId))
-                {
-                    bool alreadyTracked = ps.PotionUsed.Contains(tradedId) || ps.PotionDiscarded.Contains(tradedId);
-                    if (!alreadyTracked)
-                    {
-                        RemoveOneMatchingPotion(potions, tradedId);
-                    }
-                }
-
-                if (eventName == "STONE_OF_ALL_TIME" &&
-                    choiceEvent.Variables.TryGetValue("DrinkRandomPotion", out object? drinkVar) &&
-                    TryGetEventVariableString(drinkVar, out string? drunkName) &&
-                    potionNames.TryResolveDisplayName(drunkName!, out ModelId drunkId))
-                {
-                    bool alreadyTracked = ps.PotionUsed.Contains(drunkId) || ps.PotionDiscarded.Contains(drunkId);
-                    if (!alreadyTracked)
-                    {
-                        RemoveOneMatchingPotion(potions, drunkId);
-                    }
-                }
-            }
         }
 
         return new ReconstructedLoadout
@@ -241,7 +216,8 @@ public static class RunReconstructor
             Relics = relics,
             EncounterId = encounterId,
             MonsterIds = combatRoom.MonsterIds.ToList(),
-            Potions = potions
+            Potions = potions,
+            MaxPotionSlots = maxPotionSlots
         };
     }
 
@@ -338,34 +314,5 @@ public static class RunReconstructor
         {
             potions.RemoveAt(index);
         }
-    }
-
-    /// <summary>
-    /// An event's LocString variable value is declared as <c>object</c> (see
-    /// EventOptionHistoryEntry.Variables) because at runtime, after the game's own JSON converter
-    /// deserializes it, its concrete type is a game-internal DynamicVar/StringVar — not something this
-    /// mod's assembly references or can pattern-match on directly, and not something the offline test
-    /// project's DTO doubles can reasonably mimic by type identity either. Both sides instead expose the
-    /// same *property names* (StringValue on StringVar; BaseValue on DynamicVar, which StringVar also
-    /// inherits), so reflection is the one bridge that works unmodified against both the real game types
-    /// and the test doubles.
-    /// </summary>
-    private static bool TryGetEventVariableString(object variable, out string? value)
-    {
-        value = variable.GetType().GetProperty("StringValue")?.GetValue(variable) as string;
-        return !string.IsNullOrEmpty(value);
-    }
-
-    private static bool TryGetEventVariableCount(object variable, out int count)
-    {
-        object? raw = variable.GetType().GetProperty("BaseValue")?.GetValue(variable);
-        if (raw is decimal d)
-        {
-            count = (int)d;
-            return count > 0;
-        }
-
-        count = 0;
-        return false;
     }
 }

@@ -141,13 +141,23 @@ public class DojoReplayConsoleCmd : AbstractConsoleCmd
                     player.AddRelicInternal(RelicModel.FromSerializable(pr.Relic), index: -1, silent: true);
                 }
 
-                // Grow potion slots to fit the reconstructed inventory if needed (e.g. a run-in-progress
-                // potion belt upgrade isn't recoverable — see CLAUDE.md §5 — so we just make sure
-                // whatever RunReconstructor found actually fits, rather than silently dropping potions
-                // past the throwaway player's default 3 slots).
-                if (loadout.Potions.Count > player.MaxPotionCount)
+                // Reconcile potion slot count to loadout.MaxPotionSlots (ascension's Tight Belt baseline +
+                // any Potion Belt/Alchemical Coffer/Phial Holster picked up — see RunReconstructor). The
+                // throwaway player already gets the ascension reduction automatically (RunManager's launch
+                // sequence applies AscensionManager.ApplyEffectsTo for every new player), but NOT the
+                // relic-based bonuses, since reconstructed relics deliberately skip AfterObtained() (see
+                // the relic loop above) — so this reconciles explicitly rather than assuming either side
+                // is already correct. Do NOT just grow to fit loadout.Potions.Count: that would silently
+                // paper over a reconstruction bug if the potion count and the true slot count ever
+                // disagree, instead of surfacing it.
+                int slotDelta = loadout.MaxPotionSlots - player.MaxPotionCount;
+                if (slotDelta > 0)
                 {
-                    player.AddToMaxPotionCount(loadout.Potions.Count - player.MaxPotionCount);
+                    player.AddToMaxPotionCount(slotDelta);
+                }
+                else if (slotDelta < 0)
+                {
+                    player.SubtractFromMaxPotionCount(-slotDelta);
                 }
 
                 foreach (ProvenancedPotion pp in loadout.Potions)
