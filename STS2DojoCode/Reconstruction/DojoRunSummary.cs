@@ -52,9 +52,18 @@ public sealed class DojoRunSummary
     public required long StartTime { get; init; }
     public required float RunTimeSeconds { get; init; }
     public required string Seed { get; init; }
+    public required ModelId? KilledByEncounterId { get; init; }
+    public required ModelId? KilledByEventId { get; init; }
     public required int DeckCount { get; init; }
     public required int RelicCount { get; init; }
     public required IReadOnlyList<DojoActSummary> Acts { get; init; }
+
+    /// <summary>Cached live-content eligibility for compact fight pills, keyed by 1-based global floor.
+    /// Empty means "not known" rather than "ineligible." Persisted values are only hydrated when their
+    /// content hash matches the current ModelIdSerializationCache.Hash.</summary>
+    public IReadOnlyDictionary<int, bool> CachedFightEligibility { get; set; } = new Dictionary<int, bool>();
+
+    public string? CachedFightEligibilityContentHash { get; set; }
 
     /// <summary>Re-produces the full parsed run when a row is built or a fight is launched. Deliberately
     /// a factory + weak cache rather than a strong <c>RunHistory</c> reference: the summaries for an
@@ -122,6 +131,8 @@ public static class DojoRunSummarizer
             StartTime = run.StartTime,
             RunTimeSeconds = run.RunTime,
             Seed = run.Seed,
+            KilledByEncounterId = run.KilledByEncounter,
+            KilledByEventId = run.KilledByEvent,
             DeckCount = player.Deck.Count(),
             RelicCount = player.Relics.Count(),
             Acts = ExtractActs(run),
