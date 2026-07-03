@@ -101,21 +101,32 @@ internal static class DojoRunIndexCacheRunner
     {
         string keep = RunPath("1782524433.run");
         string stale = RunPath("1779595721.run");
+        string otherProfile = Path.Combine(
+            Path.GetTempPath(), "sts2dojo-other-profile", "history", "1782524433.run");
         Assert.True(DojoRunFileFingerprint.TryRead(keep, out DojoRunFileFingerprint keepFingerprint),
             "keep fingerprint");
         Assert.True(DojoRunFileFingerprint.TryRead(stale, out DojoRunFileFingerprint staleFingerprint),
             "stale fingerprint");
+        DojoRunFileFingerprint otherProfileFingerprint =
+            keepFingerprint with { FilePath = otherProfile, FileName = Path.GetFileName(otherProfile) };
 
         var document = new DojoRunIndexCacheDocument();
         Assert.True(DojoRunIndexCache.Upsert(document, DojoRunIndexCache.FromResult(
             keepFingerprint, RunHistoryFileDecision.LoadFailed, null, null, null)), "keep upsert");
         Assert.True(DojoRunIndexCache.Upsert(document, DojoRunIndexCache.FromResult(
             staleFingerprint, RunHistoryFileDecision.LoadFailed, null, null, null)), "stale upsert");
+        Assert.True(DojoRunIndexCache.Upsert(document, DojoRunIndexCache.FromResult(
+            otherProfileFingerprint, RunHistoryFileDecision.LoadFailed, null, null, null)), "other profile upsert");
 
-        Assert.True(DojoRunIndexCache.EvictMissing(document, new HashSet<string> { keep }),
+        Assert.True(DojoRunIndexCache.EvictMissing(
+                document,
+                new HashSet<string> { keep },
+                Path.GetDirectoryName(keep)),
             "eviction changed document");
         Assert.True(DojoRunIndexCache.TryGetEntry(document, keep, out _), "kept entry remains");
         Assert.True(!DojoRunIndexCache.TryGetEntry(document, stale, out _), "stale entry removed");
+        Assert.True(DojoRunIndexCache.TryGetEntry(document, otherProfile, out _),
+            "other profile entry remains");
     }
 
     private static void EligibilityHashInvalidation()

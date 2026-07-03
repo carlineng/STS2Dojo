@@ -420,12 +420,14 @@ public partial class NDojoScreen : NSubmenu
         {
             _statusLabel.Text = "Loading runs...";
             // The directory is resolved here on the main thread (it touches Godot's ProjectSettings);
-            // the sidecar cache path is resolved here for the same reason. Parsing changed .run files is
-            // then CPU-only work, so it runs off-thread. Godot's synchronization context resumes this
-            // method on the main thread for the UI work below.
+            // the sidecar cache path and live content hash are resolved here for the same reason. Parsing
+            // changed .run files is then CPU-only work, so it runs off-thread. Godot's synchronization
+            // context resumes this method on the main thread for the UI work below.
             string? directory = DojoRunIndex.TryGetRealHistoryDirectory();
             string? cachePath = DojoRunIndex.TryGetCachePath();
-            DojoRunIndexResult result = await Task.Run(() => DojoRunIndex.LoadAll(directory, cachePath));
+            string? eligibilityContentHash = DojoRunIndex.TryGetEligibilityContentHash();
+            DojoRunIndexResult result =
+                await Task.Run(() => DojoRunIndex.LoadAll(directory, cachePath, eligibilityContentHash));
             _index = result;
         }
         catch (Exception e)
@@ -817,6 +819,7 @@ public partial class DojoRunRow : PanelContainer
             && fight.GlobalFloor <= floors.Count
             && DojoFloorEligibility.IsEligible(history, floors[fight.GlobalFloor - 1], fight.GlobalFloor);
         runCache[fight.GlobalFloor] = eligible;
+        DojoRunIndex.RememberFightEligibility(_run, fight.GlobalFloor, eligible);
         return eligible;
     }
 

@@ -6,7 +6,6 @@ using System.Linq;
 using Godot;
 using MegaCrit.Sts2.Core.Multiplayer.Serialization;
 using MegaCrit.Sts2.Core.Runs;
-using MegaCrit.Sts2.Core.Runs.History;
 using MegaCrit.Sts2.Core.Saves;
 using STS2Dojo.STS2DojoCode.Reconstruction;
 
@@ -61,6 +60,19 @@ public static class DojoRunIndex
         }
     }
 
+    public static string? TryGetEligibilityContentHash()
+    {
+        try
+        {
+            return ModelIdSerializationCache.Hash.ToString(CultureInfo.InvariantCulture);
+        }
+        catch (Exception e)
+        {
+            MainFile.Logger.Info("[STS2Dojo] Could not read ModelIdSerializationCache.Hash: " + e.Message);
+            return null;
+        }
+    }
+
     /// <summary>The real profile's history directory as an absolute OS path, or null (logged) if it
     /// can't be resolved. Uses the modded session's own profile id — profile1's modded data maps to
     /// profile1's real data.</summary>
@@ -86,11 +98,13 @@ public static class DojoRunIndex
     /// <paramref name="directory"/> should be resolved on the main thread (it comes from
     /// <see cref="TryGetRealHistoryDirectory"/>, which calls into Godot's ProjectSettings); everything in
     /// here is plain file/CPU work, safe to run inside Task.Run.</summary>
-    public static DojoRunIndexResult LoadAll(string? directory, string? cachePath = null)
+    public static DojoRunIndexResult LoadAll(
+        string? directory,
+        string? cachePath = null,
+        string? eligibilityContentHash = null)
     {
         var runs = new List<DojoRunSummary>();
         var excluded = new Dictionary<RunHistoryFileDecision, int>();
-        string? eligibilityContentHash = CurrentEligibilityContentHash();
         DojoRunIndexCacheDocument diskCache = DojoRunIndexCache.Load(
             cachePath, message => MainFile.Logger.Info(message));
         bool diskCacheChanged = false;
@@ -137,12 +151,14 @@ public static class DojoRunIndex
         // because an empty `files` from an I/O error must not wipe a perfectly good cache.
         if (listedSuccessfully)
         {
-            foreach (string stale in Cache.Keys.Where(key => !seen.Contains(key)).ToList())
+            foreach (string stale in Cache.Keys
+                         .Where(key => IsFileInDirectory(key, directory) && !seen.Contains(key))
+                         .ToList())
             {
                 Cache.Remove(stale);
             }
 
-            if (DojoRunIndexCache.EvictMissing(diskCache, seen))
+            if (DojoRunIndexCache.EvictMissing(diskCache, seen, directory))
             {
                 diskCacheChanged = true;
             }
@@ -221,7 +237,7 @@ public static class DojoRunIndex
             return hydratedEntry;
         }
 
-        CacheEntry entry = Classify(file, fingerprint, eligibilityContentHash);
+        CacheEntry entry = Classify(file, fingerprint);
         Cache[file] = entry;
         diskCacheChanged |= DojoRunIndexCache.Upsert(diskCache,
             DojoRunIndexCache.FromResult(
@@ -229,7 +245,7 @@ public static class DojoRunIndex
                 entry.Decision,
                 null,
                 entry.Summary,
-                entry.EligibilityContentHash,
+                null,
                 entry.RunSchemaVersion,
                 entry.BuildId));
         return entry;
@@ -237,8 +253,7 @@ public static class DojoRunIndex
 
     private static CacheEntry Classify(
         string file,
-        DojoRunFileFingerprint fingerprint,
-        string? eligibilityContentHash)
+        DojoRunFileFingerprint fingerprint)
     {
         RunHistoryFileCandidate candidate;
         try
@@ -269,16 +284,6 @@ public static class DojoRunIndex
             // RunHistory graph in this session-lifetime cache — see DojoRunSummary.RunSource.
             DojoRunSummary summary =
                 DojoRunSummarizer.Summarize(file, selection.Run, () => RunHistoryLoader.Load(file));
-            try
-            {
-                summary.CachedFightEligibility = ComputeDisplayFightEligibility(selection.Run, summary);
-                summary.CachedFightEligibilityContentHash = eligibilityContentHash;
-            }
-            catch (Exception e)
-            {
-                MainFile.Logger.Info(
-                    $"[STS2Dojo] Could not precompute Dojo fight eligibility for '{file}': {e.Message}");
-            }
 
             return new CacheEntry(
                 fingerprint,
@@ -286,7 +291,7 @@ public static class DojoRunIndex
                 summary,
                 selection.Run.SchemaVersion,
                 selection.Run.BuildId,
-                eligibilityContentHash);
+                null);
         }
         catch (Exception e)
         {
@@ -295,31 +300,80 @@ public static class DojoRunIndex
         }
     }
 
-    private static Dictionary<int, bool> ComputeDisplayFightEligibility(
-        RunHistory history,
-        DojoRunSummary summary)
+    public static void RememberFightEligibility(DojoRunSummary summary, int globalFloor, bool eligible)
     {
-        var eligibility = new Dictionary<int, bool>();
-        IReadOnlyList<MapPointHistoryEntry> floors = RunHistoryQueries.FlattenFloors(history);
-        foreach (DojoFightSummary fight in summary.Acts.SelectMany(act => act.DisplayFights))
+        string? eligibilityContentHash = TryGetEligibilityContentHash();
+        if (eligibilityContentHash == null)
         {
-            eligibility[fight.GlobalFloor] = fight.GlobalFloor >= 1
-                && fight.GlobalFloor <= floors.Count
-                && DojoFloorEligibility.IsEligible(history, floors[fight.GlobalFloor - 1], fight.GlobalFloor);
+            return;
         }
-        return eligibility;
-    }
 
-    private static string? CurrentEligibilityContentHash()
-    {
         try
         {
-            return ModelIdSerializationCache.Hash.ToString(CultureInfo.InvariantCulture);
+            Dictionary<int, bool> eligibility = summary.CachedFightEligibilityContentHash == eligibilityContentHash
+                ? new Dictionary<int, bool>(summary.CachedFightEligibility)
+                : [];
+            if (eligibility.TryGetValue(globalFloor, out bool cached) && cached == eligible)
+            {
+                return;
+            }
+
+            eligibility[globalFloor] = eligible;
+            summary.CachedFightEligibility = eligibility;
+            summary.CachedFightEligibilityContentHash = eligibilityContentHash;
+
+            if (!DojoRunFileFingerprint.TryRead(summary.FilePath, out DojoRunFileFingerprint fingerprint))
+            {
+                return;
+            }
+
+            Cache.TryGetValue(summary.FilePath, out CacheEntry? cachedEntry);
+            Cache[summary.FilePath] = new CacheEntry(
+                fingerprint,
+                RunHistoryFileDecision.Include,
+                summary,
+                cachedEntry?.RunSchemaVersion,
+                cachedEntry?.BuildId,
+                eligibilityContentHash);
+
+            string? cachePath = TryGetCachePath();
+            DojoRunIndexCacheDocument diskCache = DojoRunIndexCache.Load(
+                cachePath, message => MainFile.Logger.Info(message));
+            DojoRunIndexCache.Upsert(diskCache,
+                DojoRunIndexCache.FromResult(
+                    fingerprint,
+                    RunHistoryFileDecision.Include,
+                    null,
+                    summary,
+                    eligibilityContentHash,
+                    cachedEntry?.RunSchemaVersion,
+                    cachedEntry?.BuildId));
+            DojoRunIndexCache.SaveAtomic(cachePath, diskCache, message => MainFile.Logger.Info(message));
         }
         catch (Exception e)
         {
-            MainFile.Logger.Info("[STS2Dojo] Could not read ModelIdSerializationCache.Hash: " + e.Message);
-            return null;
+            MainFile.Logger.Info("[STS2Dojo] Could not persist Dojo fight eligibility: " + e.Message);
+        }
+    }
+
+    private static bool IsFileInDirectory(string filePath, string? directory)
+    {
+        if (directory == null)
+        {
+            return false;
+        }
+
+        try
+        {
+            string? fileDirectory = Path.GetDirectoryName(Path.GetFullPath(filePath));
+            return string.Equals(
+                fileDirectory,
+                Path.GetFullPath(directory),
+                StringComparison.Ordinal);
+        }
+        catch
+        {
+            return false;
         }
     }
 }

@@ -350,11 +350,21 @@ public static class DojoRunIndexCache
         return true;
     }
 
-    public static bool EvictMissing(DojoRunIndexCacheDocument document, ISet<string> seenFiles)
+    public static bool EvictMissing(
+        DojoRunIndexCacheDocument document,
+        ISet<string> seenFiles,
+        string? scannedDirectory)
     {
         bool changed = false;
+        if (string.IsNullOrWhiteSpace(scannedDirectory))
+        {
+            return false;
+        }
+
         HashSet<string> normalizedSeen = seenFiles.Select(CacheKey).ToHashSet();
-        foreach (string stale in document.Entries.Keys.Where(key => !normalizedSeen.Contains(CacheKey(key))).ToList())
+        foreach (string stale in document.Entries.Keys
+                     .Where(key => IsInDirectory(key, scannedDirectory) && !normalizedSeen.Contains(CacheKey(key)))
+                     .ToList())
         {
             document.Entries.Remove(stale);
             changed = true;
@@ -488,6 +498,19 @@ public static class DojoRunIndexCache
         catch
         {
             return filePath;
+        }
+    }
+
+    private static bool IsInDirectory(string filePath, string directory)
+    {
+        try
+        {
+            string? fileDirectory = Path.GetDirectoryName(CacheKey(filePath));
+            return string.Equals(fileDirectory, CacheKey(directory), StringComparison.Ordinal);
+        }
+        catch
+        {
+            return false;
         }
     }
 
