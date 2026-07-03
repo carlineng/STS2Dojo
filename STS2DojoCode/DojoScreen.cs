@@ -235,7 +235,10 @@ public partial class NDojoScreen : NSubmenu
         characterGrid.AddThemeConstantOverride("h_separation", 8);
         characterGrid.AddThemeConstantOverride("v_separation", 8);
         stack.AddChild(characterGrid);
-        AddFilterChip(characterGrid, _characterChips, "All", selected: true,
+        DojoChip allCharacterChip = DojoUi.MakeChip("All", compact: true);
+        // Match the taller character-icon circles so the row stays aligned.
+        allCharacterChip.CustomMinimumSize = new Vector2(allCharacterChip.CustomMinimumSize.X, 52);
+        AddFilterChip(characterGrid, _characterChips, allCharacterChip, selected: true,
             () => { _filterCharacter = null; RebuildList(); });
         foreach (CharacterModel character in SafeAllCharacters())
         {
@@ -1213,10 +1216,10 @@ public partial class DojoChip : NButton
             _icon = icon;
             _icon.MouseFilter = MouseFilterEnum.Ignore;
             _icon.SetAnchorsPreset(LayoutPreset.FullRect);
-            _icon.OffsetLeft = iconOnly ? 7 : 8;
-            _icon.OffsetTop = iconOnly ? 6 : 8;
-            _icon.OffsetRight = iconOnly ? -7 : -8;
-            _icon.OffsetBottom = iconOnly ? -6 : -8;
+            _icon.OffsetLeft = iconOnly ? 11 : 8;
+            _icon.OffsetTop = iconOnly ? 11 : 8;
+            _icon.OffsetRight = iconOnly ? -11 : -8;
+            _icon.OffsetBottom = iconOnly ? -11 : -8;
             AddChild(_icon);
         }
         if (text.Length > 0)
@@ -1231,9 +1234,10 @@ public partial class DojoChip : NButton
         }
 
         float width = iconOnly
-            ? 46
+            ? 52
             : DojoUi.MeasureTextWidth(text, fontSize) + (compact ? 30 : 38);
-        CustomMinimumSize = new Vector2(width, compact ? 36 : 48);
+        float height = iconOnly ? 52 : (compact ? 36 : 48);
+        CustomMinimumSize = new Vector2(width, height);
         FocusMode = FocusModeEnum.All;
         MouseFilter = MouseFilterEnum.Stop;
     }
