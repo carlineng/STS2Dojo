@@ -59,6 +59,8 @@ public partial class DojoCompletionScreen : Control, IScreenContext
 
     public override string _GetTooltip(Vector2 atPosition) => string.Empty;
 
+    public override Control _MakeCustomTooltip(string forText) => null!;
+
     public override void _Process(double delta)
     {
         _tooltipCleanupElapsed += delta;
@@ -511,21 +513,20 @@ public partial class DojoCompletionScreen : Control, IScreenContext
             return;
         }
 
-        Node? tooltipContainer = TryFindNativeTooltipContainer(node);
-        if (tooltipContainer != null)
-        {
-            tooltipContainer.QueueFreeSafely();
-        }
-        else if (node is CanvasItem canvasItem)
-        {
-            canvasItem.Hide();
-        }
+        TryFindNativeTooltipContainer(node)?.QueueFreeSafely();
     }
 
     private static bool IsNativeNullTooltipLabel(Node node)
     {
-        return node is Label label && label.Text == "<null>"
-            || node is RichTextLabel richTextLabel && richTextLabel.Text == "<null>";
+        return node is Label label && IsNullTooltipText(label.Text)
+            || node is RichTextLabel richTextLabel && IsNullTooltipText(richTextLabel.Text);
+    }
+
+    private static bool IsNullTooltipText(string text)
+    {
+        string trimmed = text.Trim();
+        return trimmed.Equals("null", StringComparison.OrdinalIgnoreCase)
+            || trimmed.Equals("<null>", StringComparison.OrdinalIgnoreCase);
     }
 
     private static Node? TryFindNativeTooltipContainer(Node node)
@@ -605,6 +606,8 @@ public partial class DojoCompletionEventOptionButton : NButton
     protected override string[] Hotkeys => Array.Empty<string>();
 
     public override string _GetTooltip(Vector2 atPosition) => string.Empty;
+
+    public override Control _MakeCustomTooltip(string forText) => null!;
 
     public override void _Ready()
     {
