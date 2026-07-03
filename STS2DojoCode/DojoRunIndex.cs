@@ -80,6 +80,7 @@ public static class DojoRunIndex
             files = [];
         }
 
+        var seen = new HashSet<string>(files.Length);
         foreach (string file in files)
         {
             // Same skip set as the game's own RunHistorySaveManager.LoadAllRunHistoryNames.
@@ -89,6 +90,7 @@ public static class DojoRunIndex
                 continue;
             }
 
+            seen.Add(file);
             CacheEntry entry = ClassifyCached(file);
             if (entry.Summary != null)
             {
@@ -97,6 +99,17 @@ public static class DojoRunIndex
             else
             {
                 excluded[entry.Decision] = excluded.GetValueOrDefault(entry.Decision) + 1;
+            }
+        }
+
+        // Evict cache entries for files that no longer exist, so a deleted run doesn't pin its summary
+        // (and its classification) for the rest of the session. Skipped when the listing itself failed —
+        // an empty `files` from an I/O error must not wipe a perfectly good cache.
+        if (files.Length > 0)
+        {
+            foreach (string stale in Cache.Keys.Where(key => !seen.Contains(key)).ToList())
+            {
+                Cache.Remove(stale);
             }
         }
 
@@ -146,7 +159,10 @@ public static class DojoRunIndex
 
         try
         {
-            return new CacheEntry(lastWriteUtc, selection.Decision, DojoRunSummarizer.Summarize(file, selection.Run));
+            // runSource lets the summary re-read the file on demand instead of pinning the parsed
+            // RunHistory graph in this session-lifetime cache — see DojoRunSummary.RunSource.
+            return new CacheEntry(lastWriteUtc, selection.Decision,
+                DojoRunSummarizer.Summarize(file, selection.Run, () => RunHistoryLoader.Load(file)));
         }
         catch (Exception e)
         {

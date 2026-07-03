@@ -32,6 +32,21 @@ namespace STS2Dojo.STS2DojoCode;
 /// </summary>
 public static class DojoFloorEligibility
 {
+    private sealed record StartingSnapshot(
+        List<SerializableCard> Deck,
+        List<SerializableRelic> Relics,
+        int MaxHp,
+        int Gold);
+
+    /// <summary>The throwaway-player starting snapshot depends only on (character, ascension), and
+    /// building it (Player.CreateForNewRun + RunState.CreateForNewRun + AscensionManager) is by far the
+    /// expensive part of an eligibility check — the reconstruction replay itself is just list walking.
+    /// Cached so per-floor checks (48 icons in the stock run-history view, up to ~13 pills per custom
+    /// Dojo-screen row) each cost microseconds instead of a fresh player build. The snapshot's
+    /// serializable DTOs are only ever read downstream (RunReconstructor is pure data-in/data-out), so
+    /// sharing the instances across checks is safe.</summary>
+    private static readonly Dictionary<(ModelId Character, int Ascension), StartingSnapshot> SnapshotCache = new();
+
     /// <summary>Cheap, non-reconstruction structural checks (CLAUDE.md §6/§10): single-player only, no
     /// modifier-bearing runs, and only floors with an actual combat room.</summary>
     public static bool IsStructurallyReplayable(RunHistory history, MapPointHistoryEntry entry) =>
@@ -53,22 +68,10 @@ public static class DojoFloorEligibility
 
         try
         {
-            CharacterModel character = ModelDb.GetById<CharacterModel>(history.Players.Single().Character);
-            Player previewPlayer = Player.CreateForNewRun(character, UnlockState.all, netId: 1uL);
-            RunState.CreateForNewRun(
-                new List<Player> { previewPlayer },
-                ActModel.GetDefaultList().Select(a => a.ToMutable()).ToList(),
-                Array.Empty<ModifierModel>(),
-                GameMode.Standard,
-                history.Ascension,
-                SeedHelper.GetRandomSeed());
-            new AscensionManager(history.Ascension).ApplyEffectsTo(previewPlayer);
-
-            List<SerializableCard> startingDeck = previewPlayer.Deck.Cards.Select(c => c.ToSerializable()).ToList();
-            List<SerializableRelic> startingRelics = previewPlayer.Relics.Select(r => r.ToSerializable()).ToList();
+            StartingSnapshot snapshot = GetStartingSnapshot(history.Players.Single().Character, history.Ascension);
 
             ReconstructedLoadout loadout = RunReconstructor.Reconstruct(
-                history, globalFloor, startingDeck, startingRelics, previewPlayer.Creature.MaxHp, previewPlayer.Gold);
+                history, globalFloor, snapshot.Deck, snapshot.Relics, snapshot.MaxHp, snapshot.Gold);
 
             return DojoContentEligibility.Validate(loadout, LiveDojoContentResolver.Instance).IsEligible;
         }
@@ -76,5 +79,33 @@ public static class DojoFloorEligibility
         {
             return false;
         }
+    }
+
+    private static StartingSnapshot GetStartingSnapshot(ModelId characterId, int ascension)
+    {
+        (ModelId, int) key = (characterId, ascension);
+        if (SnapshotCache.TryGetValue(key, out StartingSnapshot? cached))
+        {
+            return cached;
+        }
+
+        CharacterModel character = ModelDb.GetById<CharacterModel>(characterId);
+        Player previewPlayer = Player.CreateForNewRun(character, UnlockState.all, netId: 1uL);
+        RunState.CreateForNewRun(
+            new List<Player> { previewPlayer },
+            ActModel.GetDefaultList().Select(a => a.ToMutable()).ToList(),
+            Array.Empty<ModifierModel>(),
+            GameMode.Standard,
+            ascension,
+            SeedHelper.GetRandomSeed());
+        new AscensionManager(ascension).ApplyEffectsTo(previewPlayer);
+
+        var snapshot = new StartingSnapshot(
+            previewPlayer.Deck.Cards.Select(c => c.ToSerializable()).ToList(),
+            previewPlayer.Relics.Select(r => r.ToSerializable()).ToList(),
+            previewPlayer.Creature.MaxHp,
+            previewPlayer.Gold);
+        SnapshotCache[key] = snapshot;
+        return snapshot;
     }
 }

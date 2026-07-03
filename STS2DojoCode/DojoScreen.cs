@@ -64,6 +64,8 @@ public partial class NDojoScreen : NSubmenu
     private ScrollContainer _scroll = null!;
     private VBoxContainer _rowContainer = null!;
     private Label _statusLabel = null!;
+    private DojoBackChip _backChip = null!;
+    private Godot.Timer _searchDebounce = null!;
 
     private ModelId? _filterCharacter;
     private int? _filterAscension;
@@ -105,18 +107,28 @@ public partial class NDojoScreen : NSubmenu
 
     /// <summary>Deliberately does NOT call base.ConnectSignals(): the base implementation requires a
     /// scene-baked "BackButton" child (NBackButton) that a code-only screen doesn't have. The pieces of
-    /// base behavior that matter — visibility-driven shown/hidden hooks — are replicated here.</summary>
+    /// base behavior that matter are replicated here: the visibility-driven shown/hidden hooks, and —
+    /// critically — enabling/disabling the back control with visibility. NHotkeyManager invokes only the
+    /// LAST-pushed binding per hotkey, and stock submenus rely on "hidden submenu ⇒ back button Disabled
+    /// ⇒ hotkeys unregistered" to keep exactly one cancel binding live; a back chip that stayed enabled
+    /// while this screen sits hidden in the submenu stack would shadow every other ESC consumer.</summary>
     protected override void ConnectSignals()
     {
+        // The chip registered its hotkeys in its own _Ready (children ready before parent); this screen
+        // starts hidden, so immediately hand the cancel binding back until the screen is actually shown.
+        _backChip.Disable();
+
         VisibilityChanged += () =>
         {
             if (Visible)
             {
+                _backChip.Enable();
                 OnSubmenuShown();
             }
             else
             {
                 _lastFocusedControl = GetViewport()?.GuiGetFocusOwner();
+                _backChip.Disable();
                 OnSubmenuHidden();
             }
         };
@@ -201,7 +213,14 @@ public partial class NDojoScreen : NSubmenu
         {
             _searchBox.AddThemeFontOverride("font", uiFont);
         }
-        _searchBox.TextChanged += _ => RebuildList();
+        // Debounced: rebuilding the whole visible list (teardown + row construction) on every keystroke
+        // of a fast typist is wasted work; a short one-shot timer batches them.
+        _searchDebounce = new Godot.Timer();
+        _searchDebounce.WaitTime = 0.18;
+        _searchDebounce.OneShot = true;
+        _searchDebounce.Timeout += RebuildList;
+        AddChild(_searchDebounce);
+        _searchBox.TextChanged += _ => _searchDebounce.Start();
         stack.AddChild(_searchBox);
         stack.AddChild(MakeSpacer(8));
 
@@ -256,10 +275,10 @@ public partial class NDojoScreen : NSubmenu
         filler.SizeFlagsVertical = SizeFlags.ExpandFill;
         stack.AddChild(filler);
 
-        var backChip = new DojoBackChip();
-        backChip.Configure("← Back to Menu", compact: false);
-        backChip.Released += _ => GoBack();
-        stack.AddChild(backChip);
+        _backChip = new DojoBackChip();
+        _backChip.Configure("← Back to Menu", compact: false);
+        _backChip.Released += _ => GoBack();
+        stack.AddChild(_backChip);
 
         return sidebar;
     }
@@ -320,22 +339,8 @@ public partial class NDojoScreen : NSubmenu
         parent.AddChild(chip);
     }
 
-    private void AddSortChip(Control parent, string text, DojoRunSortOrder order, bool selected)
-    {
-        var chip = DojoUi.MakeChip(text, compact: true);
-        chip.Selected = selected;
-        chip.Released += _ =>
-        {
-            foreach (DojoChip other in _sortChips)
-            {
-                other.Selected = other == chip;
-            }
-            _sortOrder = order;
-            RebuildList();
-        };
-        _sortChips.Add(chip);
-        parent.AddChild(chip);
-    }
+    private void AddSortChip(Control parent, string text, DojoRunSortOrder order, bool selected) =>
+        AddFilterChip(parent, _sortChips, text, selected, () => { _sortOrder = order; RebuildList(); });
 
     private void ResetFilters()
     {
@@ -518,11 +523,32 @@ public partial class NDojoScreen : NSubmenu
         center.AddThemeConstantOverride("separation", 8);
         columns.AddChild(center);
         center.AddChild(BuildRowHeader(run));
-        center.AddChild(BuildActStrip(run));
-        Control? quote = BuildDeathQuote(run);
-        if (quote != null)
+
+        // The full parsed run is loaded on demand (weakly cached — see DojoRunSummary.RunSource); the
+        // act strip, death quote, and pill launches all need it. If the file has become unreadable since
+        // the index was built, degrade to a header-only row instead of crashing the whole list.
+        RunHistory? history = null;
+        try
         {
-            center.AddChild(quote);
+            history = run.GetRun();
+        }
+        catch (Exception e)
+        {
+            MainFile.Logger.Error($"[STS2Dojo] Could not re-load run file '{run.FilePath}': {e.Message}");
+        }
+
+        if (history != null)
+        {
+            center.AddChild(BuildActStrip(run, history));
+            Control? quote = BuildDeathQuote(run, history);
+            if (quote != null)
+            {
+                center.AddChild(quote);
+            }
+        }
+        else
+        {
+            center.AddChild(DojoUi.MakeLabel("Run file could not be read.", 15, FaintText));
         }
 
         columns.AddChild(BuildRowMeta(run));
@@ -586,13 +612,13 @@ public partial class NDojoScreen : NSubmenu
         return header;
     }
 
-    private Control BuildActStrip(DojoRunSummary run)
+    private Control BuildActStrip(DojoRunSummary run, RunHistory history)
     {
         var strip = new HBoxContainer();
         strip.AddThemeConstantOverride("separation", 26);
         strip.SizeFlagsHorizontal = SizeFlags.ExpandFill;
 
-        IReadOnlyList<MapPointHistoryEntry> floors = RunHistoryQueries.FlattenFloors(run.Run);
+        IReadOnlyList<MapPointHistoryEntry> floors = RunHistoryQueries.FlattenFloors(history);
 
         foreach (DojoActSummary act in run.Acts)
         {
@@ -614,7 +640,7 @@ public partial class NDojoScreen : NSubmenu
             }
             foreach (DojoFightSummary boss in act.Bosses)
             {
-                bossLine.AddChild(BuildFightPill(run, boss, floors, compact: false));
+                bossLine.AddChild(BuildFightPill(run, history, boss, floors, compact: false));
             }
 
             if (act.Elites.Count > 0)
@@ -625,7 +651,7 @@ public partial class NDojoScreen : NSubmenu
                 actBox.AddChild(eliteLine);
                 foreach (DojoFightSummary elite in act.Elites)
                 {
-                    eliteLine.AddChild(BuildFightPill(run, elite, floors, compact: true));
+                    eliteLine.AddChild(BuildFightPill(run, history, elite, floors, compact: true));
                 }
             }
 
@@ -635,32 +661,36 @@ public partial class NDojoScreen : NSubmenu
         return strip;
     }
 
-    /// <summary>Per-(run,floor) eligibility results. The check runs a full preview reconstruction
-    /// (DojoFloorEligibility), which is fine once but adds up: every filter/sort/search change rebuilds
-    /// the visible rows, and re-checking a couple hundred pills per rebuild would visibly hitch.
-    /// Eligibility only depends on the run file + currently-loaded content, both fixed for the session.</summary>
-    private static readonly Dictionary<(string FilePath, int Floor), bool> PillEligibilityCache = new();
+    /// <summary>Per-summary, per-floor eligibility results. Rebuilding the visible rows (every
+    /// filter/sort/search change) would otherwise re-run reconstructions for pills already checked.
+    /// Keyed by summary identity via a ConditionalWeakTable rather than a plain (path, floor)
+    /// dictionary: when DojoRunIndex re-summarizes a changed file (mtime bump — e.g. Steam Cloud
+    /// swapping a run file, which §5h shows really happens), the old summary and its cached verdicts
+    /// simply fall away, so this can neither serve stale eligibility nor grow past the live run set.</summary>
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<DojoRunSummary, Dictionary<int, bool>>
+        PillEligibilityCache = new();
 
     private Control BuildFightPill(
-        DojoRunSummary run, DojoFightSummary fight, IReadOnlyList<MapPointHistoryEntry> floors, bool compact)
+        DojoRunSummary run, RunHistory history, DojoFightSummary fight,
+        IReadOnlyList<MapPointHistoryEntry> floors, bool compact)
     {
         string name = DojoDisplayNames.Encounter(fight.EncounterId);
 
-        (string FilePath, int Floor) cacheKey = (run.FilePath, fight.GlobalFloor);
-        if (!PillEligibilityCache.TryGetValue(cacheKey, out bool eligible))
+        Dictionary<int, bool> runCache = PillEligibilityCache.GetOrCreateValue(run);
+        if (!runCache.TryGetValue(fight.GlobalFloor, out bool eligible))
         {
             eligible = fight.GlobalFloor >= 1 && fight.GlobalFloor <= floors.Count
-                && DojoFloorEligibility.IsEligible(run.Run, floors[fight.GlobalFloor - 1], fight.GlobalFloor);
-            PillEligibilityCache[cacheKey] = eligible;
+                && DojoFloorEligibility.IsEligible(history, floors[fight.GlobalFloor - 1], fight.GlobalFloor);
+            runCache[fight.GlobalFloor] = eligible;
         }
 
         var pill = new DojoFightPill();
         pill.Configure(name, fight.WasDeathFight, eligible, compact);
         if (eligible)
         {
-            RunHistory history = run.Run;
             int floor = fight.GlobalFloor;
-            pill.Released += _ => TaskHelper.RunSafely(ConfirmAndLaunch(history, floor, name));
+            pill.Released += _ => TaskHelper.RunSafely(DojoReplayConfirmation.ConfirmAndLaunch(
+                history, floor, $"Replay {name}? (Floor {floor})"));
         }
         else
         {
@@ -669,7 +699,7 @@ public partial class NDojoScreen : NSubmenu
         return pill;
     }
 
-    private Control? BuildDeathQuote(DojoRunSummary run)
+    private Control? BuildDeathQuote(DojoRunSummary run, RunHistory history)
     {
         if (run.Win)
         {
@@ -678,8 +708,8 @@ public partial class NDojoScreen : NSubmenu
 
         try
         {
-            GameOverType gameOverType = NRunHistory.GetGameOverType(run.Run);
-            string quote = NRunHistory.GetDeathQuote(run.Run, run.CharacterId, gameOverType);
+            GameOverType gameOverType = NRunHistory.GetGameOverType(history);
+            string quote = NRunHistory.GetDeathQuote(history, run.CharacterId, gameOverType);
             // The quote comes back with the game's rich-text/glyph markup; this screen renders plain
             // labels, so strip any [tags] and show the bare sentence.
             quote = Regex.Replace(quote, @"\[.*?\]", string.Empty).Trim();
@@ -740,35 +770,6 @@ public partial class NDojoScreen : NSubmenu
     }
 
     // ------------------------------------------------------------------ actions
-
-    private static async Task ConfirmAndLaunch(RunHistory history, int floor, string fightName)
-    {
-        NGenericPopup? popup = NGenericPopup.Create();
-        NModalContainer? modalContainer = NModalContainer.Instance;
-        if (popup == null || modalContainer == null)
-        {
-            return;
-        }
-
-        modalContainer.Add(popup);
-
-        // Raw-string SetText on the underlying NVerticalPopup, bypassing the LocString-only
-        // NGenericPopup.WaitForConfirmation — this mod has no localization tables. Same approach as
-        // DojoFloorClickPatch.ConfirmAndLaunch.
-        NVerticalPopup verticalPopup = popup.GetNode<NVerticalPopup>("VerticalPopup");
-        verticalPopup.SetText("Dojo", $"Replay {fightName}? (Floor {floor})");
-
-        var confirmation = new TaskCompletionSource<bool>();
-        verticalPopup.InitYesButton(
-            new LocString("main_menu_ui", "GENERIC_POPUP.confirm"), _ => confirmation.TrySetResult(true));
-        verticalPopup.InitNoButton(
-            new LocString("main_menu_ui", "GENERIC_POPUP.cancel"), _ => confirmation.TrySetResult(false));
-
-        if (await confirmation.Task)
-        {
-            await DojoReplayLauncher.LaunchReplay(history, floor);
-        }
-    }
 
     private static void OpenFullRunHistory(DojoRunSummary run)
     {
@@ -1036,22 +1037,20 @@ public partial class DojoFightPill : NButton
     }
 }
 
-/// <summary>The colored circular character token at the left of each run row (drawn: circle + letter).</summary>
+/// <summary>The colored circular character token at the left of each run row: _Draw renders the circle,
+/// a plain Label child renders the letter.</summary>
 public partial class DojoCharacterToken : Control
 {
     private Color _color = StsColors.gray;
-    private string _letter = "?";
-    private Label? _label;
 
     public void Configure(string letter, Color color)
     {
-        _letter = letter;
         _color = color;
-        _label = DojoUi.MakeLabel(letter, 26, StsColors.cream);
-        _label.HorizontalAlignment = HorizontalAlignment.Center;
-        _label.VerticalAlignment = VerticalAlignment.Center;
-        _label.SetAnchorsPreset(LayoutPreset.FullRect);
-        AddChild(_label);
+        Label label = DojoUi.MakeLabel(letter, 26, StsColors.cream);
+        label.HorizontalAlignment = HorizontalAlignment.Center;
+        label.VerticalAlignment = VerticalAlignment.Center;
+        label.SetAnchorsPreset(LayoutPreset.FullRect);
+        AddChild(label);
         MouseFilter = MouseFilterEnum.Ignore;
     }
 

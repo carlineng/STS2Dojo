@@ -98,8 +98,6 @@ internal static class DojoRunBrowserLogicRunner
             ["ENCOUNTER.TEST_SUBJECT_BOSS@48", "ENCOUNTER.QUEEN_BOSS@49"],
             win.Acts[2].Bosses.Select(f => $"{f.EncounterId}@{f.GlobalFloor}").ToArray(),
             "A10 win has two final-act bosses");
-        Assert.True(win.Acts[2].Bosses.All(f => f.IsBoss), "boss fights marked as bosses");
-        Assert.True(win.Acts.SelectMany(a => a.Elites).All(f => !f.IsBoss), "elite fights not marked as bosses");
     }
 
     private static void DeathFightMarking()

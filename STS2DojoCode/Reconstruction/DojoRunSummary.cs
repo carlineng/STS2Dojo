@@ -18,7 +18,6 @@ namespace STS2Dojo.STS2DojoCode.Reconstruction;
 public sealed record DojoFightSummary(
     int GlobalFloor,
     ModelId EncounterId,
-    bool IsBoss,
     bool WasDeathFight);
 
 /// <summary>Per-act slice of a run's boss/elite fights. ActId comes from the run file's top-level
@@ -51,9 +50,33 @@ public sealed class DojoRunSummary
     public required int RelicCount { get; init; }
     public required IReadOnlyList<DojoActSummary> Acts { get; init; }
 
-    /// <summary>The full parsed run, kept so a pill/row click can hand it straight to
-    /// DojoReplayLauncher / the stock NRunHistory without re-reading the file.</summary>
-    public required RunHistory Run { get; init; }
+    /// <summary>Re-produces the full parsed run when a row is built or a fight is launched. Deliberately
+    /// a factory + weak cache rather than a strong <c>RunHistory</c> reference: the summaries for an
+    /// entire profile (~1000 runs) live for the whole session in DojoRunIndex's cache, and pinning every
+    /// parsed run graph (full per-floor history, deck/relic lists) would cost tens to hundreds of MB.
+    /// With the weak cache, only runs whose rows are currently built stay loaded.</summary>
+    public required Func<RunHistory> RunSource { get; init; }
+
+    private WeakReference<RunHistory>? _cachedRun;
+
+    /// <summary>The full parsed run for this summary (re-read from disk if it has been collected since
+    /// the last use). Can throw if the underlying file has become unreadable — callers on UI paths
+    /// should treat that as a degraded row, not a crash.</summary>
+    public RunHistory GetRun()
+    {
+        if (_cachedRun != null && _cachedRun.TryGetTarget(out RunHistory? cached))
+        {
+            return cached;
+        }
+
+        RunHistory run = RunSource();
+        _cachedRun = new WeakReference<RunHistory>(run);
+        return run;
+    }
+
+    /// <summary>Seeds the weak cache with the instance the summarizer already parsed, so the first
+    /// GetRun() after building the index doesn't immediately re-read the file it came from.</summary>
+    internal void SeedRunCache(RunHistory run) => _cachedRun = new WeakReference<RunHistory>(run);
 }
 
 public static class DojoRunSummarizer
@@ -62,8 +85,10 @@ public static class DojoRunSummarizer
     /// Builds the row summary for a single-player run. Caller is responsible for having already gated
     /// the run through <see cref="RunHistoryFileSelector"/> (multiplayer/modifier/no-combat exclusions) —
     /// this only distills display data and assumes players[0] is the (sole) player.
+    /// <paramref name="runSource"/> re-produces the run on demand (see DojoRunSummary.RunSource); when
+    /// omitted, the summary just retains <paramref name="run"/> strongly (fine for tests/one-offs).
     /// </summary>
-    public static DojoRunSummary Summarize(string filePath, RunHistory run)
+    public static DojoRunSummary Summarize(string filePath, RunHistory run, Func<RunHistory>? runSource = null)
     {
         RunHistoryPlayer player = run.Players[0];
 
@@ -78,7 +103,7 @@ public static class DojoRunSummarizer
             endMaxHp = lastStats.MaxHp;
         }
 
-        return new DojoRunSummary
+        var summary = new DojoRunSummary
         {
             FilePath = filePath,
             CharacterId = player.Character,
@@ -94,8 +119,10 @@ public static class DojoRunSummarizer
             DeckCount = player.Deck.Count(),
             RelicCount = player.Relics.Count(),
             Acts = ExtractActs(run),
-            Run = run
+            RunSource = runSource ?? (() => run)
         };
+        summary.SeedRunCache(run);
+        return summary;
     }
 
     /// <summary>
@@ -136,7 +163,7 @@ public static class DojoRunSummarizer
                         && Equals(room.ModelId, run.KilledByEncounter);
 
                     (isBoss ? bosses : elites).Add(
-                        new DojoFightSummary(globalFloor, room.ModelId, isBoss, wasDeathFight));
+                        new DojoFightSummary(globalFloor, room.ModelId, wasDeathFight));
                 }
             }
 
