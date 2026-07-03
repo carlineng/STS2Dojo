@@ -566,7 +566,7 @@ public partial class DojoCompletionScreen : Control, IScreenContext
             return;
         }
         await game.ReturnToMainMenu();
-        DojoRunBrowser.Open(game);
+        NDojoScreen.Open(game);
     }
 
     private static async Task OnReturnToMainMenu()
