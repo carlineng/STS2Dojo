@@ -9,7 +9,7 @@ using MegaCrit.Sts2.Core.Runs.History;
 namespace STS2Dojo.STS2DojoCode.Reconstruction;
 
 /// <summary>
-/// One boss/elite fight in a run, as shown on a Dojo run-browser row's per-act strip. Pure data — the
+/// One highlighted fight in a run, as shown on a Dojo run-browser row's per-act strip. Pure data — the
 /// display name and live content-eligibility of the encounter are resolved by the UI layer at row-build
 /// time (see DojoFloorEligibility), not here, so this stays unit-testable against DTO test doubles.
 /// <c>WasDeathFight</c> is true for the fight the player died in (lost, non-abandoned runs only): the
@@ -18,15 +18,21 @@ namespace STS2Dojo.STS2DojoCode.Reconstruction;
 public sealed record DojoFightSummary(
     int GlobalFloor,
     ModelId EncounterId,
+    RoomType RoomType,
+    ModelId DisplayId,
     bool WasDeathFight);
 
-/// <summary>Per-act slice of a run's boss/elite fights. ActId comes from the run file's top-level
+/// <summary>Per-act slice of the fights shown on a compact Dojo row. ActId comes from the run file's top-level
 /// acts list and can be null for acts beyond that list's length (defensive; not seen in the corpus).</summary>
 public sealed record DojoActSummary(
     int ActIndex,
     ModelId? ActId,
     IReadOnlyList<DojoFightSummary> Bosses,
-    IReadOnlyList<DojoFightSummary> Elites);
+    IReadOnlyList<DojoFightSummary> Elites,
+    IReadOnlyList<DojoFightSummary> OtherDeathFights)
+{
+    public IEnumerable<DojoFightSummary> DisplayFights => Bosses.Concat(Elites).Concat(OtherDeathFights);
+}
 
 /// <summary>
 /// Everything a Dojo run-browser row displays about one <c>.run</c> file, precomputed once at load time
@@ -126,11 +132,12 @@ public static class DojoRunSummarizer
     }
 
     /// <summary>
-    /// Per-act boss/elite fights, keyed off each room's <c>room_type</c> (NOT <c>map_point_type</c> —
-    /// CLAUDE.md §6: node type is misleading; a boss/elite room inside an event node is still that room
-    /// type). Global floor numbering is 1-based across acts, matching RunHistoryQueries.FindCombatFloor
-    /// and floor_added_to_deck. An ascension-10 win naturally yields two bosses in the final act — two
-    /// boss-room floors in map_point_history — with no special casing here.
+    /// Per-act boss/elite fights plus the final normal fight when a run dies there. Combat kind is keyed
+    /// off each room's <c>room_type</c> (NOT <c>map_point_type</c> — CLAUDE.md §6: node type is misleading;
+    /// a boss/elite room inside an event node is still that room type). Global floor numbering is 1-based
+    /// across acts, matching RunHistoryQueries.FindCombatFloor and floor_added_to_deck. An ascension-10
+    /// win naturally yields two bosses in the final act — two boss-room floors in map_point_history —
+    /// with no special casing here.
     /// </summary>
     public static IReadOnlyList<DojoActSummary> ExtractActs(RunHistory run)
     {
@@ -143,32 +150,52 @@ public static class DojoRunSummarizer
         {
             var bosses = new List<DojoFightSummary>();
             var elites = new List<DojoFightSummary>();
+            var otherDeathFights = new List<DojoFightSummary>();
             foreach (MapPointHistoryEntry floor in run.MapPointHistory[actIndex])
             {
                 globalFloor++;
                 foreach (MapPointRoomHistoryEntry room in floor.Rooms)
                 {
+                    if (room.ModelId == null)
+                    {
+                        continue;
+                    }
+
                     bool isBoss = room.RoomType == RoomType.Boss;
                     bool isElite = room.RoomType == RoomType.Elite;
-                    if ((!isBoss && !isElite) || room.ModelId == null)
+                    bool wasDeathFight = diedInCombat
+                        && globalFloor == totalFloors
+                        && Equals(room.ModelId, run.KilledByEncounter);
+                    bool isOtherDeathFight = wasDeathFight && room.RoomType == RoomType.Monster;
+                    if (!isBoss && !isElite && !isOtherDeathFight)
                     {
                         continue;
                     }
 
                     // The death fight: only the last visited floor of a lost, non-abandoned run can be
-                    // it, and killed_by_encounter must actually match this room (a death to an event or
-                    // to a plain monster room on that floor must not tag a boss/elite pill as fatal).
-                    bool wasDeathFight = diedInCombat
-                        && globalFloor == totalFloors
-                        && Equals(room.ModelId, run.KilledByEncounter);
-
-                    (isBoss ? bosses : elites).Add(
-                        new DojoFightSummary(globalFloor, room.ModelId, wasDeathFight));
+                    // it, and killed_by_encounter must actually match this room.
+                    ModelId displayId = isOtherDeathFight && room.MonsterIds.Count == 1
+                        ? room.MonsterIds[0]
+                        : room.ModelId;
+                    var fight = new DojoFightSummary(
+                        globalFloor, room.ModelId, room.RoomType, displayId, wasDeathFight);
+                    if (isBoss)
+                    {
+                        bosses.Add(fight);
+                    }
+                    else if (isElite)
+                    {
+                        elites.Add(fight);
+                    }
+                    else
+                    {
+                        otherDeathFights.Add(fight);
+                    }
                 }
             }
 
             ModelId? actId = actIndex < run.Acts.Count ? run.Acts[actIndex] : null;
-            acts.Add(new DojoActSummary(actIndex, actId, bosses, elites));
+            acts.Add(new DojoActSummary(actIndex, actId, bosses, elites, otherDeathFights));
         }
 
         return acts;

@@ -104,8 +104,7 @@ internal static class DojoRunBrowserLogicRunner
     {
         // Died to an elite mid-act: exactly that fight is the death fight.
         DojoRunSummary eliteDeath = Summarize("1779595721.run");
-        List<DojoFightSummary> allFights = eliteDeath.Acts
-            .SelectMany(a => a.Bosses.Concat(a.Elites)).ToList();
+        List<DojoFightSummary> allFights = eliteDeath.Acts.SelectMany(a => a.DisplayFights).ToList();
         Assert.SequenceEqual(
             ["ENCOUNTER.DECIMILLIPEDE_ELITE@25"],
             allFights.Where(f => f.WasDeathFight).Select(f => $"{f.EncounterId}@{f.GlobalFloor}").ToArray(),
@@ -119,9 +118,69 @@ internal static class DojoRunBrowserLogicRunner
                 .Select(f => $"{f.EncounterId}@{f.GlobalFloor}").ToArray(),
             "boss death fight");
 
+        // Died to a normal hallway fight: surface that final fight even though normal fights are
+        // otherwise omitted from compact run rows.
+        ModelId normalEncounter = ModelId.Deserialize("ENCOUNTER.SLIMES_NORMAL");
+        ModelId normalMonster = ModelId.Deserialize("MONSTER.SLIMED_BERSERKER");
+        RunHistory normalDeath = new()
+        {
+            Win = false,
+            WasAbandoned = false,
+            Seed = "NORMALDEATH",
+            KilledByEncounter = normalEncounter,
+            Acts = [ModelId.Deserialize("ACT.UNDERDOCKS")],
+            Players =
+            [
+                new RunHistoryPlayer
+                {
+                    Id = 1,
+                    Character = ModelId.Deserialize("CHARACTER.IRONCLAD")
+                }
+            ],
+            MapPointHistory =
+            [
+                [
+                    new MapPointHistoryEntry
+                    {
+                        Rooms =
+                        [
+                            new MapPointRoomHistoryEntry
+                            {
+                                RoomType = RoomType.Monster,
+                                ModelId = normalEncounter,
+                                MonsterIds = [normalMonster]
+                            }
+                        ],
+                        PlayerStats =
+                        [
+                            new PlayerMapPointHistoryEntry
+                            {
+                                PlayerId = 1,
+                                CurrentHp = 0,
+                                MaxHp = 80
+                            }
+                        ]
+                    }
+                ]
+            ]
+        };
+        DojoRunSummary normalDeathSummary = DojoRunSummarizer.Summarize("normal-death.run", normalDeath);
+        Assert.SequenceEqual(
+            ["ENCOUNTER.SLIMES_NORMAL@1"],
+            normalDeathSummary.Acts[0].OtherDeathFights.Select(f => $"{f.EncounterId}@{f.GlobalFloor}").ToArray(),
+            "normal death fight is displayed");
+        Assert.Equal(RoomType.Monster, normalDeathSummary.Acts[0].OtherDeathFights[0].RoomType,
+            "normal death fight room type");
+        Assert.Equal(normalMonster, normalDeathSummary.Acts[0].OtherDeathFights[0].DisplayId,
+            "normal death fight display id");
+        Assert.Equal(normalEncounter, normalDeathSummary.Acts[0].OtherDeathFights[0].EncounterId,
+            "normal death fight replay encounter id");
+        Assert.True(normalDeathSummary.Acts[0].OtherDeathFights[0].WasDeathFight,
+            "normal death fight marked fatal");
+
         // A victory has no death fight.
         DojoRunSummary win = Summarize("1782524433.run");
-        Assert.True(win.Acts.SelectMany(a => a.Bosses.Concat(a.Elites)).All(f => !f.WasDeathFight),
+        Assert.True(win.Acts.SelectMany(a => a.DisplayFights).All(f => !f.WasDeathFight),
             "no death fight on a win");
 
         // An abandoned run has no death fight even if its last floor was a combat.
@@ -142,7 +201,7 @@ internal static class DojoRunBrowserLogicRunner
         };
         DojoRunSummary abandonedSummary = DojoRunSummarizer.Summarize("abandoned.run", abandonedCopy);
         Assert.True(
-            abandonedSummary.Acts.SelectMany(a => a.Bosses.Concat(a.Elites)).All(f => !f.WasDeathFight),
+            abandonedSummary.Acts.SelectMany(a => a.DisplayFights).All(f => !f.WasDeathFight),
             "no death fight on an abandoned run");
     }
 
