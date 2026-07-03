@@ -46,6 +46,34 @@ namespace STS2Dojo.STS2DojoCode;
 public static class DojoRunBrowser
 {
     private static bool _restorePending;
+    private static string? _targetRunFileName;
+
+    /// <summary>Opens the stock run-history screen pre-selected on a specific run (by file name, e.g.
+    /// "1779595721.run") — the custom Dojo screen's "View All Combats" drill-in. The selection itself
+    /// happens in <see cref="DojoRunHistoryTargetRunPatch"/> once NRunHistory has built its run list.</summary>
+    public static void OpenAtRun(NGame game, string runFileName)
+    {
+        _targetRunFileName = runFileName;
+        try
+        {
+            Open(game);
+        }
+        finally
+        {
+            // Open() pushes NRunHistory synchronously, which fires OnSubmenuOpened (and the patch below)
+            // before returning — if the target is still set here, the push never happened (no main menu,
+            // empty history, exception) and it must not leak into some future unrelated open.
+            _targetRunFileName = null;
+        }
+    }
+
+    /// <summary>Called only by <see cref="DojoRunHistoryTargetRunPatch"/>.</summary>
+    internal static string? ConsumeTargetRunFileName()
+    {
+        string? target = _targetRunFileName;
+        _targetRunFileName = null;
+        return target;
+    }
 
     public static void Open(NGame game)
     {
@@ -92,6 +120,61 @@ public static class DojoRunBrowser
         }
         _restorePending = false;
         return true;
+    }
+}
+
+/// <summary>
+/// Selects a specific run when the Dojo opened NRunHistory via <see cref="DojoRunBrowser.OpenAtRun"/>.
+/// NRunHistory.OnSubmenuOpened always rebuilds its file list and selects index 0 (newest); this postfix
+/// re-selects the requested run by file name. The run-name list and the selection method are private,
+/// so both are reached via AccessTools — the same pattern DojoMainMenuPatch uses for the main-menu
+/// focus animation hooks.
+/// </summary>
+[HarmonyPatch(typeof(NRunHistory), nameof(NRunHistory.OnSubmenuOpened))]
+public static class DojoRunHistoryTargetRunPatch
+{
+    private static readonly System.Reflection.FieldInfo RunNamesField =
+        HarmonyLib.AccessTools.Field(typeof(NRunHistory), "_runNames");
+    private static readonly System.Reflection.MethodInfo RefreshAndSelectRunMethod =
+        HarmonyLib.AccessTools.Method(typeof(NRunHistory), "RefreshAndSelectRun");
+
+    // ReSharper disable once UnusedMember.Global
+    public static void Postfix(NRunHistory __instance)
+    {
+        string? target = DojoRunBrowser.ConsumeTargetRunFileName();
+        if (target == null)
+        {
+            return;
+        }
+
+        try
+        {
+            if (RunNamesField.GetValue(__instance) is not System.Collections.Generic.List<string> runNames)
+            {
+                return;
+            }
+
+            int index = runNames.IndexOf(target);
+            if (index <= 0)
+            {
+                // 0 = already selected by OnSubmenuOpened itself; -1 = not found (log and stay on newest).
+                if (index < 0)
+                {
+                    MainFile.Logger.Error($"[STS2Dojo] Run '{target}' not found in the run history list.");
+                }
+                return;
+            }
+
+            if (RefreshAndSelectRunMethod.Invoke(__instance, new object[] { index })
+                is System.Threading.Tasks.Task task)
+            {
+                MegaCrit.Sts2.Core.Helpers.TaskHelper.RunSafely(task);
+            }
+        }
+        catch (System.Exception e)
+        {
+            MainFile.Logger.Error("[STS2Dojo] Could not select the requested run in Run History: " + e);
+        }
     }
 }
 

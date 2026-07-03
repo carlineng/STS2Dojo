@@ -139,6 +139,7 @@ TestRunner.Run(
 
 DecisionTestRunner.Run();
 PotionReconstructionAcceptanceRunner.Run();
+DojoRunBrowserLogicRunner.Run();
 
 internal sealed record ReconstructorFixture(
     string Name,

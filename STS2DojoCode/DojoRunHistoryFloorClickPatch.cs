@@ -55,38 +55,8 @@ public static class DojoFloorClickPatch
         }
 
         EligibleEntries.Add(__result, EligibleMarker);
-        __result.Released += _ => TaskHelper.RunSafely(ConfirmAndLaunch(history, floorNum));
-    }
-
-    private static async Task ConfirmAndLaunch(RunHistory history, int floorNum)
-    {
-        NGenericPopup? popup = NGenericPopup.Create();
-        NModalContainer? modalContainer = NModalContainer.Instance;
-        if (popup == null || modalContainer == null)
-        {
-            return;
-        }
-
-        modalContainer.Add(popup);
-
-        // NGenericPopup.WaitForConfirmation only accepts LocString header/body, which resolve against the
-        // base game's localization tables — this mod has none. Bypassing it for the raw-string SetText
-        // overload on the underlying NVerticalPopup (same node NGenericPopup itself uses internally) avoids
-        // needing new loc-table entries just for this dialog's text. The Yes/No button labels DO go through
-        // LocString, but reuse two keys that already exist in the base game's own tables.
-        NVerticalPopup verticalPopup = popup.GetNode<NVerticalPopup>("VerticalPopup");
-        verticalPopup.SetText("Dojo", $"Replay this fight in the Dojo? (Floor {floorNum})");
-
-        var confirmation = new TaskCompletionSource<bool>();
-        verticalPopup.InitYesButton(
-            new LocString("main_menu_ui", "GENERIC_POPUP.confirm"), _ => confirmation.TrySetResult(true));
-        verticalPopup.InitNoButton(
-            new LocString("main_menu_ui", "GENERIC_POPUP.cancel"), _ => confirmation.TrySetResult(false));
-
-        if (await confirmation.Task)
-        {
-            await DojoReplayLauncher.LaunchReplay(history, floorNum);
-        }
+        __result.Released += _ => TaskHelper.RunSafely(DojoReplayConfirmation.ConfirmAndLaunch(
+            history, floorNum, $"Replay this fight in the Dojo? (Floor {floorNum})"));
     }
 }
 

@@ -67,7 +67,7 @@ public static class DojoMainMenuPatch
             NGame? game = NGame.Instance;
             if (game != null)
             {
-                DojoRunBrowser.Open(game);
+                NDojoScreen.Open(game);
             }
         };
         dojoButton.Focused += b => FocusedMethod.Invoke(__instance, new object[] { b });
