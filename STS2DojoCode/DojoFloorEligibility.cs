@@ -47,6 +47,15 @@ public static class DojoFloorEligibility
     /// sharing the instances across checks is safe.</summary>
     private static readonly Dictionary<(ModelId Character, int Ascension), StartingSnapshot> SnapshotCache = new();
 
+    /// <summary>Whether this floor contains a combat room at all (monster/elite/boss) — the only floors
+    /// that are ever replay candidates. Used to distinguish a non-combat floor (rest/shop/event/treasure,
+    /// left rendered normally in the in-row map — it was never a replay target) from an ineligible combat
+    /// floor (greyed out, because its content no longer resolves). Deliberately independent of the
+    /// single-player/modifier gates in <see cref="IsStructurallyReplayable"/>: those exclude whole runs
+    /// upstream (they never render), so here the only question is "is this a fight."</summary>
+    public static bool IsCombatFloor(MapPointHistoryEntry entry) =>
+        entry.Rooms.Any(RunHistoryQueries.IsCombatRoom);
+
     /// <summary>Cheap, non-reconstruction structural checks (CLAUDE.md §6/§10): single-player only, no
     /// modifier-bearing runs, and only floors with an actual combat room.</summary>
     public static bool IsStructurallyReplayable(RunHistory history, MapPointHistoryEntry entry) =>

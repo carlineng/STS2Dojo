@@ -25,8 +25,9 @@ public sealed class DojoRunIndexResult
 /// <see cref="LocalFileSaveStore"/>). Crucially, this NEVER touches
 /// <c>UserDataPathProvider.IsRunningModded</c> — the real profile's path is computed by stripping the
 /// <c>modded/</c> segment from the current profile's base path (see <see cref="RealProfilePath"/>),
-/// so the §5h/§6 save-corruption hazard of flipping that global flag doesn't apply to the run LIST at
-/// all. (The stock-NRunHistory drill-in path is the only remaining flag-flip user; see DojoRunBrowser.)
+/// so the §5h/§6 save-corruption hazard of flipping that global flag doesn't apply. Nothing in the Dojo
+/// flips that flag anymore now that the stock-NRunHistory drill-in is gone (replaced by the in-row floor
+/// map — see <see cref="DojoRunRow"/>); only the unconditional <c>DojoRunHistorySaveSafetyPatch</c> remains.
 ///
 /// Results are cached per file keyed by last-write time: the first open of a ~1000-run profile pays a
 /// one-time parse cost, later opens only parse files that changed (a finished run appends exactly one).

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using Godot;
@@ -34,8 +35,9 @@ namespace STS2Dojo.STS2DojoCode;
 ///
 /// Safety: the run list is fed by <see cref="DojoRunIndex"/>, which reads the real profile's history
 /// directory directly (read-only, absolute paths) and never touches
-/// <c>UserDataPathProvider.IsRunningModded</c> — see CLAUDE.md §5h/§6. Only the "View All Combats"
-/// drill-in (stock <c>NRunHistory</c>) still uses <see cref="DojoRunBrowser"/>'s guarded flag flip.
+/// <c>UserDataPathProvider.IsRunningModded</c> — see CLAUDE.md §5h/§6. Each row
+/// (<see cref="DojoRunRow"/>) expands in place to the full per-act floor map, so there is no drill-in to
+/// the stock <c>NRunHistory</c> screen and no flag flip anywhere in the Dojo.
 ///
 /// Like <see cref="DojoCompletionScreen"/>, this is a procedurally-built node tree (the mod ships no
 /// <c>.pck</c>): it derives from <see cref="NSubmenu"/> and is pushed onto the main menu's submenu
@@ -51,10 +53,10 @@ public partial class NDojoScreen : NSubmenu
 
     private static readonly Color BackdropColor = new(0.03f, 0.035f, 0.045f, 0.88f);
     private static readonly Color SidebarColor = new("161A20EE");
-    private static readonly Color RowColor = new("1A1F27F2");
-    private static readonly Color RowBorderColor = new("2A313B");
-    private static readonly Color MutedText = new("9AA3AE");
-    private static readonly Color FaintText = new("6B7480");
+    internal static readonly Color RowColor = new("1A1F27F2");
+    internal static readonly Color RowBorderColor = new("2A313B");
+    internal static readonly Color MutedText = new("9AA3AE");
+    internal static readonly Color FaintText = new("6B7480");
 
     private static NDojoScreen? _instance;
 
@@ -149,8 +151,8 @@ public partial class NDojoScreen : NSubmenu
 
     private void GoBack()
     {
-        // Guard against the cancel/back hotkey while some other submenu (e.g. the stock NRunHistory
-        // drill-in) is stacked on top — only pop when this screen is actually the top of the stack.
+        // Guard against the cancel/back hotkey while some other submenu is stacked on top — only pop when
+        // this screen is actually the top of the stack.
         if (_stack != null && _stack.Peek() == this)
         {
             _stack.Pop();
@@ -507,55 +509,154 @@ public partial class NDojoScreen : NSubmenu
         int end = Math.Min(_rowsBuilt + RowBatchSize, _visibleRuns.Count);
         for (int i = _rowsBuilt; i < end; i++)
         {
-            _rowContainer.AddChild(BuildRunRow(_visibleRuns[i]));
+            _rowContainer.AddChild(new DojoRunRow().Init(_visibleRuns[i]));
         }
         _rowsBuilt = end;
     }
+}
 
-    // ------------------------------------------------------------------ run rows
+/// <summary>
+/// One run's row in the Dojo browser, collapsed by default and expandable IN PLACE to the full per-act
+/// floor map. This replaces the old "View All Combats" drill-in to the stock <c>NRunHistory</c> screen —
+/// and with it the Dojo's last <c>UserDataPathProvider.IsRunningModded</c> flip (CLAUDE.md §5i/§6).
+///
+/// COLLAPSED: character badge, identity header, the per-act boss/elite highlight-pill strip, the death
+/// quote, and a right-hand meta column whose last control is the expand toggle.
+///
+/// EXPANDED: a full-width identity header (with the seed, since the meta column is gone) plus one
+/// horizontal strip of stock <see cref="NMapPointHistoryEntry"/> icons per act — the same widget the stock
+/// run-history screen uses. Reusing it means the room icons, the per-floor hover tooltip, the
+/// ineligible-combat grey-out and the click-to-replay wiring all come from <see cref="DojoFloorClickPatch"/>
+/// for free. A wide act (the strip can be ~18 floors) is kept inside the row's width by wrapping each act's
+/// strip in its own horizontal <see cref="ScrollContainer"/>, so the outer list's disabled horizontal
+/// scroll is never regressed.
+///
+/// The expanded view is built lazily on first expand and freed on collapse, so those stock floor-icon nodes
+/// are never pinned beyond what the player actually has open (CLAUDE.md §5i's "don't hold strong
+/// NMapPointHistoryEntry references" rule). <c>SetPlayer</c> is required for the hover tooltip
+/// (<c>NMapPointHistoryEntry.OnFocus</c> throws without it) and is called right after the strip enters the
+/// tree: on the main thread <c>AddChild</c> runs the icons' <c>_Ready</c> synchronously, so their
+/// %QuestIcon/texture references exist by then (this mirrors <c>NRunHistory.DisplayRun</c> → <c>SelectPlayer</c>).
+/// </summary>
+public partial class DojoRunRow : PanelContainer
+{
+    private const float ActLabelWidth = 108f;
 
-    private Control BuildRunRow(DojoRunSummary run)
+    private static readonly Color DeathQuoteColor = new("D08770");
+
+    /// <summary>Per-summary, per-floor eligibility results for the collapsed pill strip. Rebuilding the
+    /// visible rows (every filter/sort/search change) would otherwise re-run reconstructions for pills
+    /// already checked. Keyed by summary identity via a <see cref="ConditionalWeakTable{TKey,TValue}"/>
+    /// rather than a plain (path, floor) dictionary: when DojoRunIndex re-summarizes a changed file (mtime
+    /// bump — e.g. Steam Cloud swapping a run file, which §5h shows really happens), the old summary and its
+    /// cached verdicts simply fall away, so this can neither serve stale eligibility nor grow past the live
+    /// run set. (The expanded floor map's per-floor verdicts come from <see cref="DojoFloorClickPatch"/>,
+    /// which runs <see cref="DojoFloorEligibility"/> — itself snapshot-cached — at icon-create time.)</summary>
+    private static readonly ConditionalWeakTable<DojoRunSummary, Dictionary<int, bool>> PillEligibilityCache = new();
+
+    private DojoRunSummary _run = null!;
+    private MarginContainer _bodyHost = null!;
+
+    private RunHistory? _history;
+    private bool _historyLoaded;
+    private bool _expanded;
+
+    /// <summary>Builds the row for <paramref name="run"/> (collapsed). A method rather than a constructor
+    /// argument so the class keeps the parameterless constructor Godot's C# type registration expects, the
+    /// same pattern <see cref="DojoChip"/>/<see cref="DojoFightPill"/> use.</summary>
+    public DojoRunRow Init(DojoRunSummary run)
     {
-        var row = new PanelContainer();
-        row.AddThemeStyleboxOverride("panel", MakePanelStyle(RowColor, RowBorderColor, 10));
-        row.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        _run = run;
+        AddThemeStyleboxOverride("panel",
+            NDojoScreen.MakePanelStyle(NDojoScreen.RowColor, NDojoScreen.RowBorderColor, 10));
+        SizeFlagsHorizontal = SizeFlags.ExpandFill;
 
-        var pad = new MarginContainer();
-        pad.AddThemeConstantOverride("margin_left", 20);
-        pad.AddThemeConstantOverride("margin_right", 20);
-        pad.AddThemeConstantOverride("margin_top", 14);
-        pad.AddThemeConstantOverride("margin_bottom", 14);
-        row.AddChild(pad);
+        _bodyHost = new MarginContainer();
+        _bodyHost.AddThemeConstantOverride("margin_left", 20);
+        _bodyHost.AddThemeConstantOverride("margin_right", 20);
+        _bodyHost.AddThemeConstantOverride("margin_top", 14);
+        _bodyHost.AddThemeConstantOverride("margin_bottom", 14);
+        _bodyHost.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        AddChild(_bodyHost);
+
+        RenderCollapsed();
+        return this;
+    }
+
+    /// <summary>The full parsed run, loaded on demand (weakly cached in the summary — see
+    /// DojoRunSummary.RunSource) and held for this row's lifetime; null if the file has become unreadable
+    /// since the index was built, in which case rows degrade to a header-only message.</summary>
+    private RunHistory? History()
+    {
+        if (_historyLoaded)
+        {
+            return _history;
+        }
+        _historyLoaded = true;
+        try
+        {
+            _history = _run.GetRun();
+        }
+        catch (Exception e)
+        {
+            MainFile.Logger.Error($"[STS2Dojo] Could not re-load run file '{_run.FilePath}': {e.Message}");
+        }
+        return _history;
+    }
+
+    private void ClearBody()
+    {
+        foreach (Node child in _bodyHost.GetChildren())
+        {
+            _bodyHost.RemoveChild(child);
+            child.QueueFreeSafely();
+        }
+    }
+
+    private void Toggle()
+    {
+        _expanded = !_expanded;
+        if (_expanded)
+        {
+            RenderExpanded();
+        }
+        else
+        {
+            RenderCollapsed();
+        }
+    }
+
+    private DojoChip MakeToggleChip(string text)
+    {
+        DojoChip chip = DojoUi.MakeChip(text, compact: true);
+        chip.Released += _ => Toggle();
+        return chip;
+    }
+
+    // ------------------------------------------------------------------ collapsed
+
+    private void RenderCollapsed()
+    {
+        ClearBody();
 
         var columns = new HBoxContainer();
         columns.AddThemeConstantOverride("separation", 18);
-        pad.AddChild(columns);
+        columns.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        _bodyHost.AddChild(columns);
 
-        columns.AddChild(BuildCharacterBadge(run));
+        columns.AddChild(BuildCharacterBadge());
 
         var center = new VBoxContainer();
         center.SizeFlagsHorizontal = SizeFlags.ExpandFill;
         center.AddThemeConstantOverride("separation", 8);
         columns.AddChild(center);
-        center.AddChild(BuildRowHeader(run));
+        center.AddChild(BuildIdentityHeader(inlineAscension: false, includeSeed: false));
 
-        // The full parsed run is loaded on demand (weakly cached — see DojoRunSummary.RunSource); the
-        // act strip, death quote, and pill launches all need it. If the file has become unreadable since
-        // the index was built, degrade to a header-only row instead of crashing the whole list.
-        RunHistory? history = null;
-        try
-        {
-            history = run.GetRun();
-        }
-        catch (Exception e)
-        {
-            MainFile.Logger.Error($"[STS2Dojo] Could not re-load run file '{run.FilePath}': {e.Message}");
-        }
-
+        RunHistory? history = History();
         if (history != null)
         {
-            center.AddChild(BuildActStrip(run, history));
-            Control? quote = BuildDeathQuote(run, history);
+            center.AddChild(BuildActStrip(history));
+            Control? quote = BuildDeathQuote(history);
             if (quote != null)
             {
                 center.AddChild(quote);
@@ -563,22 +664,21 @@ public partial class NDojoScreen : NSubmenu
         }
         else
         {
-            center.AddChild(DojoUi.MakeLabel("Run file could not be read.", 15, FaintText));
+            center.AddChild(DojoUi.MakeLabel("Run file could not be read.", 15, NDojoScreen.FaintText));
         }
 
-        columns.AddChild(BuildRowMeta(run));
-        return row;
+        columns.AddChild(BuildRowMeta());
     }
 
-    private Control BuildCharacterBadge(DojoRunSummary run)
+    private Control BuildCharacterBadge()
     {
         var box = new VBoxContainer();
         box.AddThemeConstantOverride("separation", 6);
         box.SizeFlagsVertical = SizeFlags.ShrinkBegin;
 
-        box.AddChild(DojoUi.MakeCharacterToken(run.CharacterId, ResolveCharacterColor(run.CharacterId)));
+        box.AddChild(DojoUi.MakeCharacterToken(_run.CharacterId, ResolveCharacterColor(_run.CharacterId)));
 
-        var ascension = DojoUi.MakeLabel($"A{run.Ascension}", 15, StsColors.gold);
+        var ascension = DojoUi.MakeLabel($"A{_run.Ascension}", 15, StsColors.gold);
         ascension.HorizontalAlignment = HorizontalAlignment.Center;
         ascension.SizeFlagsHorizontal = SizeFlags.ExpandFill;
         box.AddChild(ascension);
@@ -602,27 +702,40 @@ public partial class NDojoScreen : NSubmenu
         return StsColors.gray;
     }
 
-    private Control BuildRowHeader(DojoRunSummary run)
+    /// <summary>The identity line shared by both states: character, VICTORY/DEFEAT/ABANDONED, floor, HP.
+    /// The expanded state additionally prefixes the ascension (there's no badge column there) and appends
+    /// the seed (the meta column that normally carries it is gone).</summary>
+    private HBoxContainer BuildIdentityHeader(bool inlineAscension, bool includeSeed)
     {
         var header = new HBoxContainer();
         header.AddThemeConstantOverride("separation", 14);
 
-        header.AddChild(DojoUi.MakeLabel(DojoDisplayNames.Character(run.CharacterId), 22, StsColors.cream));
+        if (inlineAscension)
+        {
+            header.AddChild(DojoUi.MakeLabel($"A{_run.Ascension}", 16, StsColors.gold));
+        }
 
-        (string outcomeText, Color outcomeColor) = run.Win
+        header.AddChild(DojoUi.MakeLabel(DojoDisplayNames.Character(_run.CharacterId), 22, StsColors.cream));
+
+        (string outcomeText, Color outcomeColor) = _run.Win
             ? ("VICTORY", StsColors.green)
-            : run.WasAbandoned
+            : _run.WasAbandoned
                 ? ("ABANDONED", StsColors.orange)
                 : ("DEFEAT", StsColors.red);
         header.AddChild(DojoUi.MakeLabel(outcomeText, 16, outcomeColor));
 
-        header.AddChild(DojoUi.MakeLabel($"Floor {run.FloorsReached}", 17, MutedText));
-        Color hpColor = run.EndHp <= 0 ? StsColors.red : MutedText;
-        header.AddChild(DojoUi.MakeLabel($"HP {run.EndHp} / {run.EndMaxHp}", 17, hpColor));
+        header.AddChild(DojoUi.MakeLabel($"Floor {_run.FloorsReached}", 17, NDojoScreen.MutedText));
+        Color hpColor = _run.EndHp <= 0 ? StsColors.red : NDojoScreen.MutedText;
+        header.AddChild(DojoUi.MakeLabel($"HP {_run.EndHp} / {_run.EndMaxHp}", 17, hpColor));
+
+        if (includeSeed)
+        {
+            header.AddChild(DojoUi.MakeLabel($"Seed {_run.Seed}", 15, NDojoScreen.FaintText));
+        }
         return header;
     }
 
-    private Control BuildActStrip(DojoRunSummary run, RunHistory history)
+    private Control BuildActStrip(RunHistory history)
     {
         var strip = new HBoxContainer();
         strip.AddThemeConstantOverride("separation", 26);
@@ -630,7 +743,7 @@ public partial class NDojoScreen : NSubmenu
 
         IReadOnlyList<MapPointHistoryEntry> floors = RunHistoryQueries.FlattenFloors(history);
 
-        foreach (DojoActSummary act in run.Acts)
+        foreach (DojoActSummary act in _run.Acts)
         {
             var actBox = new VBoxContainer();
             actBox.AddThemeConstantOverride("separation", 5);
@@ -638,7 +751,7 @@ public partial class NDojoScreen : NSubmenu
             string actName = act.ActId != null
                 ? DojoDisplayNames.Act(act.ActId).ToUpperInvariant()
                 : $"ACT {act.ActIndex + 1}";
-            actBox.AddChild(DojoUi.MakeLabel(actName, 13, FaintText));
+            actBox.AddChild(DojoUi.MakeLabel(actName, 13, NDojoScreen.FaintText));
 
             var fightColumn = new VBoxContainer();
             fightColumn.AddThemeConstantOverride("separation", 5);
@@ -649,11 +762,11 @@ public partial class NDojoScreen : NSubmenu
                 .ToList();
             if (fights.Count == 0)
             {
-                fightColumn.AddChild(DojoUi.MakeLabel("Boss not reached", 14, FaintText));
+                fightColumn.AddChild(DojoUi.MakeLabel("Boss not reached", 14, NDojoScreen.FaintText));
             }
             foreach (DojoFightSummary fight in fights)
             {
-                fightColumn.AddChild(BuildFightPill(run, history, fight, floors));
+                fightColumn.AddChild(BuildFightPill(history, fight, floors));
             }
 
             strip.AddChild(actBox);
@@ -662,22 +775,12 @@ public partial class NDojoScreen : NSubmenu
         return strip;
     }
 
-    /// <summary>Per-summary, per-floor eligibility results. Rebuilding the visible rows (every
-    /// filter/sort/search change) would otherwise re-run reconstructions for pills already checked.
-    /// Keyed by summary identity via a ConditionalWeakTable rather than a plain (path, floor)
-    /// dictionary: when DojoRunIndex re-summarizes a changed file (mtime bump — e.g. Steam Cloud
-    /// swapping a run file, which §5h shows really happens), the old summary and its cached verdicts
-    /// simply fall away, so this can neither serve stale eligibility nor grow past the live run set.</summary>
-    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<DojoRunSummary, Dictionary<int, bool>>
-        PillEligibilityCache = new();
-
     private Control BuildFightPill(
-        DojoRunSummary run, RunHistory history, DojoFightSummary fight,
-        IReadOnlyList<MapPointHistoryEntry> floors)
+        RunHistory history, DojoFightSummary fight, IReadOnlyList<MapPointHistoryEntry> floors)
     {
         string name = DojoDisplayNames.ForSearch(fight.DisplayId);
 
-        Dictionary<int, bool> runCache = PillEligibilityCache.GetOrCreateValue(run);
+        Dictionary<int, bool> runCache = PillEligibilityCache.GetOrCreateValue(_run);
         if (!runCache.TryGetValue(fight.GlobalFloor, out bool eligible))
         {
             eligible = fight.GlobalFloor >= 1 && fight.GlobalFloor <= floors.Count
@@ -700,9 +803,9 @@ public partial class NDojoScreen : NSubmenu
         return pill;
     }
 
-    private Control? BuildDeathQuote(DojoRunSummary run, RunHistory history)
+    private Control? BuildDeathQuote(RunHistory history)
     {
-        if (run.Win)
+        if (_run.Win)
         {
             return null;
         }
@@ -710,7 +813,7 @@ public partial class NDojoScreen : NSubmenu
         try
         {
             GameOverType gameOverType = NRunHistory.GetGameOverType(history);
-            string quote = NRunHistory.GetDeathQuote(history, run.CharacterId, gameOverType);
+            string quote = NRunHistory.GetDeathQuote(history, _run.CharacterId, gameOverType);
             // The quote comes back with the game's rich-text/glyph markup; this screen renders plain
             // labels, so strip any [tags] and show the bare sentence.
             quote = Regex.Replace(quote, @"\[.*?\]", string.Empty).Trim();
@@ -718,7 +821,7 @@ public partial class NDojoScreen : NSubmenu
             {
                 return null;
             }
-            return DojoUi.MakeLabel(quote, 15, new Color("D08770"));
+            return DojoUi.MakeLabel(quote, 15, DeathQuoteColor);
         }
         catch (Exception e)
         {
@@ -727,37 +830,36 @@ public partial class NDojoScreen : NSubmenu
         }
     }
 
-    private Control BuildRowMeta(DojoRunSummary run)
+    private Control BuildRowMeta()
     {
         var meta = new VBoxContainer();
         meta.AddThemeConstantOverride("separation", 4);
         meta.SizeFlagsVertical = SizeFlags.ShrinkBegin;
         meta.CustomMinimumSize = new Vector2(215, 0);
 
-        DateTime local = DateTimeOffset.FromUnixTimeSeconds(run.StartTime).ToLocalTime().DateTime;
+        DateTime local = DateTimeOffset.FromUnixTimeSeconds(_run.StartTime).ToLocalTime().DateTime;
         meta.AddChild(RightLabel(local.ToString("MMM d, yyyy"), 17, StsColors.cream));
-        meta.AddChild(RightLabel(local.ToString("h:mm tt"), 14, MutedText));
+        meta.AddChild(RightLabel(local.ToString("h:mm tt"), 14, NDojoScreen.MutedText));
 
         string duration;
         try
         {
-            duration = TimeFormatting.Format(run.RunTimeSeconds);
+            duration = TimeFormatting.Format(_run.RunTimeSeconds);
         }
         catch (Exception)
         {
-            duration = TimeSpan.FromSeconds(run.RunTimeSeconds).ToString(@"h\:mm\:ss");
+            duration = TimeSpan.FromSeconds(_run.RunTimeSeconds).ToString(@"h\:mm\:ss");
         }
-        meta.AddChild(RightLabel($"{duration}   {run.DeckCount} cards   {run.RelicCount} relics", 14, MutedText));
-        meta.AddChild(RightLabel($"Seed {run.Seed}", 13, FaintText));
+        meta.AddChild(RightLabel($"{duration}   {_run.DeckCount} cards   {_run.RelicCount} relics", 14, NDojoScreen.MutedText));
+        meta.AddChild(RightLabel($"Seed {_run.Seed}", 13, NDojoScreen.FaintText));
 
         var filler = new Control();
         filler.CustomMinimumSize = new Vector2(0, 6);
         meta.AddChild(filler);
 
-        var viewAll = DojoUi.MakeChip("View All Combats →", compact: true);
-        viewAll.SizeFlagsHorizontal = SizeFlags.ShrinkEnd;
-        viewAll.Released += _ => OpenFullRunHistory(run);
-        meta.AddChild(viewAll);
+        DojoChip toggle = MakeToggleChip("View Combats");
+        toggle.SizeFlagsHorizontal = SizeFlags.ShrinkEnd;
+        meta.AddChild(toggle);
 
         return meta;
     }
@@ -770,20 +872,101 @@ public partial class NDojoScreen : NSubmenu
         return label;
     }
 
-    // ------------------------------------------------------------------ actions
+    // ------------------------------------------------------------------ expanded floor map
 
-    private static void OpenFullRunHistory(DojoRunSummary run)
+    private void RenderExpanded()
     {
-        NGame? game = NGame.Instance;
-        if (game == null)
+        ClearBody();
+
+        var column = new VBoxContainer();
+        column.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        column.AddThemeConstantOverride("separation", 12);
+        _bodyHost.AddChild(column);
+
+        HBoxContainer header = BuildIdentityHeader(inlineAscension: true, includeSeed: true);
+        var spacer = new Control();
+        spacer.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        header.AddChild(spacer);
+        header.AddChild(MakeToggleChip("Hide Combats"));
+        column.AddChild(header);
+
+        RunHistory? history = History();
+        if (history == null)
         {
+            column.AddChild(DojoUi.MakeLabel("Run file could not be read.", 15, NDojoScreen.FaintText));
             return;
         }
 
-        // Pushes the stock NRunHistory on top of this screen (hiding it) and selects this run; backing
-        // out pops back here. This is the one remaining path that flips IsRunningModded — all its
-        // restore hooks and the §5h save safety net live in DojoRunBrowser.
-        DojoRunBrowser.OpenAtRun(game, System.IO.Path.GetFileName(run.FilePath));
+        var entries = new List<NMapPointHistoryEntry>();
+        Control floorMap = BuildFloorMap(history, entries);
+        // Adding the map (built off-tree above) to the in-tree column runs every icon's _Ready
+        // synchronously on the main thread, so SetPlayer — which the hover tooltip requires and which reads
+        // nodes populated in _Ready — is safe immediately after (mirrors NRunHistory.DisplayRun).
+        column.AddChild(floorMap);
+
+        RunHistoryPlayer player = history.Players[0];
+        foreach (NMapPointHistoryEntry entry in entries)
+        {
+            entry.SetPlayer(player);
+        }
+    }
+
+    private Control BuildFloorMap(RunHistory history, List<NMapPointHistoryEntry> entries)
+    {
+        var map = new VBoxContainer();
+        map.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        map.AddThemeConstantOverride("separation", 8);
+
+        int baseFloor = 1;
+        for (int actIndex = 0; actIndex < history.MapPointHistory.Count; actIndex++)
+        {
+            List<MapPointHistoryEntry> floors = history.MapPointHistory[actIndex];
+
+            var actRow = new HBoxContainer();
+            actRow.AddThemeConstantOverride("separation", 12);
+            actRow.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+
+            actRow.AddChild(BuildActLabel(history, actIndex));
+
+            var strip = new HBoxContainer();
+            strip.AddThemeConstantOverride("separation", 6);
+            strip.SizeFlagsVertical = SizeFlags.ShrinkCenter;
+            for (int i = 0; i < floors.Count; i++)
+            {
+                NMapPointHistoryEntry entry = DojoFloorClickPatch.CreateDojoEntry(history, floors[i], baseFloor + i);
+                entries.Add(entry);
+                strip.AddChild(entry);
+            }
+            baseFloor += floors.Count;
+
+            // A single act can be ~18 floors wide — wrap the strip in its own horizontal scroll so it never
+            // forces the row (and thus the outer, horizontal-scroll-disabled list) wider than the viewport.
+            // Vertical scroll disabled so a vertical mouse-wheel keeps scrolling the outer run list.
+            var scroll = new ScrollContainer();
+            scroll.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+            scroll.SizeFlagsVertical = SizeFlags.ShrinkCenter;
+            scroll.HorizontalScrollMode = ScrollContainer.ScrollMode.Auto;
+            scroll.VerticalScrollMode = ScrollContainer.ScrollMode.Disabled;
+            scroll.AddChild(strip);
+            actRow.AddChild(scroll);
+
+            map.AddChild(actRow);
+        }
+
+        return map;
+    }
+
+    private static Control BuildActLabel(RunHistory history, int actIndex)
+    {
+        string actName = actIndex < history.Acts.Count
+            ? DojoDisplayNames.Act(history.Acts[actIndex]).ToUpperInvariant()
+            : $"ACT {actIndex + 1}";
+        Label label = DojoUi.MakeLabel(actName, 13, NDojoScreen.FaintText);
+        label.CustomMinimumSize = new Vector2(ActLabelWidth, 0);
+        label.HorizontalAlignment = HorizontalAlignment.Right;
+        label.VerticalAlignment = VerticalAlignment.Center;
+        label.SizeFlagsVertical = SizeFlags.ShrinkCenter;
+        return label;
     }
 }
 
@@ -1033,8 +1216,8 @@ public partial class DojoChip : NButton
 
 /// <summary>The sidebar Back chip: a DojoChip that also registers the game's cancel/back hotkeys, so
 /// ESC / controller-B close the Dojo screen like any stock submenu (whose scene-baked NBackButton
-/// normally provides this). Hotkey presses are visibility-gated by NClickableControl itself, so a
-/// stacked NRunHistory on top doesn't double-pop.</summary>
+/// normally provides this). Hotkey presses are visibility-gated by NClickableControl itself, so another
+/// submenu stacked on top doesn't double-pop.</summary>
 public partial class DojoBackChip : DojoChip
 {
     protected override string[] Hotkeys =>
