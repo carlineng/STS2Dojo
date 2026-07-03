@@ -81,8 +81,14 @@ public partial class NDojoScreen : NSubmenu
     private List<DojoRunSummary> _visibleRuns = new();
     private int _rowsBuilt;
     private bool _loading;
+    private double _nativeTooltipCleanupElapsed;
+    private bool _nativeTooltipsSuppressed;
 
     protected override Control? InitialFocusedControl => _searchBox;
+
+    public override string _GetTooltip(Vector2 atPosition) => string.Empty;
+
+    public override Control _MakeCustomTooltip(string forText) => DojoNativeTooltips.NullLikeCustomTooltip(forText);
 
     public static void Open(NGame game)
     {
@@ -144,9 +150,44 @@ public partial class NDojoScreen : NSubmenu
         TaskHelper.RunSafely(RefreshRunsAsync());
     }
 
+    protected override void OnSubmenuShown()
+    {
+        SuppressNativeTooltips();
+    }
+
+    protected override void OnSubmenuHidden()
+    {
+        RestoreNativeTooltips();
+    }
+
+    public override void _ExitTree()
+    {
+        RestoreNativeTooltips();
+    }
+
     public override void _Draw()
     {
         DrawRect(new Rect2(Vector2.Zero, Size), BackdropColor);
+    }
+
+    public override void _Process(double delta)
+    {
+        if (!Visible)
+        {
+            return;
+        }
+
+        SuppressNativeTooltipSources();
+        DojoNativeTooltips.ClearNullLikePopups();
+
+        _nativeTooltipCleanupElapsed += delta;
+        if (_nativeTooltipCleanupElapsed < 0.1d)
+        {
+            return;
+        }
+
+        _nativeTooltipCleanupElapsed = 0d;
+        DojoNativeTooltips.ClearRecursively(GetParent() ?? this);
     }
 
     private void GoBack()
@@ -165,6 +206,7 @@ public partial class NDojoScreen : NSubmenu
     {
         SetAnchorsPreset(LayoutPreset.FullRect);
         MouseFilter = MouseFilterEnum.Stop;
+        SetProcess(true);
 
         var margin = new MarginContainer();
         margin.SetAnchorsPreset(LayoutPreset.FullRect);
@@ -180,6 +222,7 @@ public partial class NDojoScreen : NSubmenu
 
         columns.AddChild(BuildSidebar());
         columns.AddChild(BuildMainArea());
+        DojoNativeTooltips.ClearRecursively(this);
     }
 
     private Control BuildSidebar()
@@ -382,6 +425,37 @@ public partial class NDojoScreen : NSubmenu
         }
     }
 
+    private void SuppressNativeTooltips()
+    {
+        if (_nativeTooltipsSuppressed)
+        {
+            return;
+        }
+
+        DojoNativeTooltips.PushNativeTooltipSuppression();
+        _nativeTooltipsSuppressed = true;
+    }
+
+    private void RestoreNativeTooltips()
+    {
+        if (!_nativeTooltipsSuppressed)
+        {
+            return;
+        }
+
+        DojoNativeTooltips.PopNativeTooltipSuppression();
+        _nativeTooltipsSuppressed = false;
+    }
+
+    private void SuppressNativeTooltipSources()
+    {
+        DojoNativeTooltips.SuppressHoveredTooltip(this);
+        if (GetParent() is Control parentControl)
+        {
+            DojoNativeTooltips.SuppressHoveredTooltip(parentControl);
+        }
+    }
+
     private static Control MakeSpacer(float height) =>
         new() { CustomMinimumSize = new Vector2(0, height) };
 
@@ -515,7 +589,9 @@ public partial class NDojoScreen : NSubmenu
         int end = Math.Min(_rowsBuilt + RowBatchSize, _visibleRuns.Count);
         for (int i = _rowsBuilt; i < end; i++)
         {
-            _rowContainer.AddChild(new DojoRunRow().Init(_visibleRuns[i]));
+            DojoRunRow row = new DojoRunRow().Init(_visibleRuns[i]);
+            _rowContainer.AddChild(row);
+            DojoNativeTooltips.ClearRecursively(row);
         }
         _rowsBuilt = end;
     }
@@ -568,6 +644,10 @@ public partial class DojoRunRow : PanelContainer
     private bool _expanded;
     private IReadOnlyList<MapPointHistoryEntry>? _flatFloors;
 
+    public override string _GetTooltip(Vector2 atPosition) => string.Empty;
+
+    public override Control _MakeCustomTooltip(string forText) => DojoNativeTooltips.NullLikeCustomTooltip(forText);
+
     /// <summary>Builds the row for <paramref name="run"/> (collapsed). A method rather than a constructor
     /// argument so the class keeps the parameterless constructor Godot's C# type registration expects, the
     /// same pattern <see cref="DojoChip"/>/<see cref="DojoFightPill"/> use.</summary>
@@ -587,6 +667,7 @@ public partial class DojoRunRow : PanelContainer
         AddChild(_bodyHost);
 
         RenderCollapsed();
+        DojoNativeTooltips.ClearRecursively(this);
         return this;
     }
 
@@ -674,6 +755,7 @@ public partial class DojoRunRow : PanelContainer
         }
 
         columns.AddChild(BuildRowMeta());
+        DojoNativeTooltips.ClearRecursively(this);
     }
 
     private Control BuildCharacterBadge()
@@ -982,6 +1064,7 @@ public partial class DojoRunRow : PanelContainer
         {
             entry.SetPlayer(player);
         }
+        DojoNativeTooltips.ClearRecursively(this);
     }
 
     private Control BuildFloorMap(RunHistory history, List<NMapPointHistoryEntry> entries)
@@ -1197,6 +1280,8 @@ public partial class DojoChip : NButton
 
     protected override string[] Hotkeys => Array.Empty<string>();
 
+    public override Control _MakeCustomTooltip(string forText) => DojoNativeTooltips.NullLikeCustomTooltip(forText);
+
     public bool Selected
     {
         get => _selected;
@@ -1240,6 +1325,7 @@ public partial class DojoChip : NButton
         CustomMinimumSize = new Vector2(width, height);
         FocusMode = FocusModeEnum.All;
         MouseFilter = MouseFilterEnum.Stop;
+        TooltipText = string.Empty;
     }
 
     public override void _Ready()
@@ -1330,6 +1416,10 @@ public partial class DojoFightPill : NButton
 
     protected override string[] Hotkeys => Array.Empty<string>();
 
+    public override string _GetTooltip(Vector2 atPosition) => string.Empty;
+
+    public override Control _MakeCustomTooltip(string forText) => DojoNativeTooltips.NullLikeCustomTooltip(forText);
+
     public void Configure(string text, ModelId encounterId, RoomType roomType, bool wasDeathFight, bool eligible)
     {
         _death = wasDeathFight;
@@ -1351,11 +1441,11 @@ public partial class DojoFightPill : NButton
             PillHeight);
         FocusMode = eligible ? FocusModeEnum.All : FocusModeEnum.None;
         MouseFilter = MouseFilterEnum.Stop;
+        TooltipText = string.Empty;
 
         if (!eligible)
         {
             Modulate = StsColors.disabledTopBarButton;
-            TooltipText = string.Empty;
         }
     }
 
