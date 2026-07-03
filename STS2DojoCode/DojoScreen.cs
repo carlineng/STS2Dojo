@@ -692,7 +692,9 @@ public partial class DojoRunRow : PanelContainer
             CharacterModel? model = ModelDb.GetByIdOrNull<CharacterModel>(characterId);
             if (model != null)
             {
-                return model.NameColor;
+                // Dim the avatar-ring color a notch — the character name colors (e.g. The Silent's
+                // green) read as too bright/neon as a solid circle outline at this size.
+                return model.NameColor.Darkened(0.18f);
             }
         }
         catch (Exception)
@@ -857,7 +859,7 @@ public partial class DojoRunRow : PanelContainer
         filler.CustomMinimumSize = new Vector2(0, 6);
         meta.AddChild(filler);
 
-        DojoChip toggle = MakeToggleChip("View Combats");
+        DojoChip toggle = MakeToggleChip("View All Combats");
         toggle.SizeFlagsHorizontal = SizeFlags.ShrinkEnd;
         meta.AddChild(toggle);
 
@@ -1053,13 +1055,13 @@ internal static class DojoUi
     internal static Control MakeCharacterToken(ModelId characterId, Color color)
     {
         var token = new PanelContainer();
-        token.CustomMinimumSize = new Vector2(58, 58);
+        token.CustomMinimumSize = new Vector2(64, 64);
         token.SizeFlagsHorizontal = Control.SizeFlags.ShrinkCenter;
         token.MouseFilter = Control.MouseFilterEnum.Ignore;
 
-        StyleBoxFlat style = NDojoScreen.MakePanelStyle(color with { A = 0.30f }, color, 29);
+        StyleBoxFlat style = NDojoScreen.MakePanelStyle(color with { A = 0.30f }, color, 32);
         style.SetBorderWidthAll(3);
-        style.SetContentMarginAll(5);
+        style.SetContentMarginAll(8);
         token.AddThemeStyleboxOverride("panel", style);
 
         Control icon = MakeCharacterIcon(characterId, 48f);
@@ -1143,10 +1145,10 @@ public partial class DojoChip : NButton
             _icon = icon;
             _icon.MouseFilter = MouseFilterEnum.Ignore;
             _icon.SetAnchorsPreset(LayoutPreset.FullRect);
-            _icon.OffsetLeft = iconOnly ? 5 : 8;
-            _icon.OffsetTop = iconOnly ? 4 : 8;
-            _icon.OffsetRight = iconOnly ? -5 : -8;
-            _icon.OffsetBottom = iconOnly ? -4 : -8;
+            _icon.OffsetLeft = iconOnly ? 7 : 8;
+            _icon.OffsetTop = iconOnly ? 6 : 8;
+            _icon.OffsetRight = iconOnly ? -7 : -8;
+            _icon.OffsetBottom = iconOnly ? -6 : -8;
             AddChild(_icon);
         }
         if (text.Length > 0)
