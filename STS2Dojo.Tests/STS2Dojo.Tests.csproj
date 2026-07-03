@@ -15,6 +15,7 @@
         <Compile Include="..\STS2DojoCode\Reconstruction\RunHistoryFileSelection.cs" LinkBase="STS2DojoCode\Reconstruction"/>
         <Compile Include="..\STS2DojoCode\Reconstruction\RealProfilePath.cs" LinkBase="STS2DojoCode\Reconstruction"/>
         <Compile Include="..\STS2DojoCode\Reconstruction\DojoRunSummary.cs" LinkBase="STS2DojoCode\Reconstruction"/>
+        <Compile Include="..\STS2DojoCode\Reconstruction\DojoRunIndexCache.cs" LinkBase="STS2DojoCode\Reconstruction"/>
         <Compile Include="..\STS2DojoCode\Reconstruction\DojoRunListQueries.cs" LinkBase="STS2DojoCode\Reconstruction"/>
     </ItemGroup>
 </Project>

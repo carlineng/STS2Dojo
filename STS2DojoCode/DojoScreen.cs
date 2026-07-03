@@ -420,11 +420,14 @@ public partial class NDojoScreen : NSubmenu
         {
             _statusLabel.Text = "Loading runs...";
             // The directory is resolved here on the main thread (it touches Godot's ProjectSettings);
-            // parsing ~1000 .run files is then CPU-only work with no Godot/game-state access, so it runs
-            // off-thread. Godot's synchronization context resumes this method on the main thread for the
-            // UI work below.
+            // the sidecar cache path and live content hash are resolved here for the same reason. Parsing
+            // changed .run files is then CPU-only work, so it runs off-thread. Godot's synchronization
+            // context resumes this method on the main thread for the UI work below.
             string? directory = DojoRunIndex.TryGetRealHistoryDirectory();
-            DojoRunIndexResult result = await Task.Run(() => DojoRunIndex.LoadAll(directory));
+            string? cachePath = DojoRunIndex.TryGetCachePath();
+            string? eligibilityContentHash = DojoRunIndex.TryGetEligibilityContentHash();
+            DojoRunIndexResult result =
+                await Task.Run(() => DojoRunIndex.LoadAll(directory, cachePath, eligibilityContentHash));
             _index = result;
         }
         catch (Exception e)
@@ -560,6 +563,7 @@ public partial class DojoRunRow : PanelContainer
     private RunHistory? _history;
     private bool _historyLoaded;
     private bool _expanded;
+    private IReadOnlyList<MapPointHistoryEntry>? _flatFloors;
 
     /// <summary>Builds the row for <paramref name="run"/> (collapsed). A method rather than a constructor
     /// argument so the class keeps the parameterless constructor Godot's C# type registration expects, the
@@ -652,11 +656,10 @@ public partial class DojoRunRow : PanelContainer
         columns.AddChild(center);
         center.AddChild(BuildIdentityHeader(inlineAscension: false, includeSeed: false));
 
-        RunHistory? history = History();
-        if (history != null)
+        if (_run.Acts.Count > 0)
         {
-            center.AddChild(BuildActStrip(history));
-            Control? quote = BuildDeathQuote(history);
+            center.AddChild(BuildActStrip());
+            Control? quote = BuildDeathQuote();
             if (quote != null)
             {
                 center.AddChild(quote);
@@ -737,13 +740,11 @@ public partial class DojoRunRow : PanelContainer
         return header;
     }
 
-    private Control BuildActStrip(RunHistory history)
+    private Control BuildActStrip()
     {
         var strip = new HBoxContainer();
         strip.AddThemeConstantOverride("separation", 26);
         strip.SizeFlagsHorizontal = SizeFlags.ExpandFill;
-
-        IReadOnlyList<MapPointHistoryEntry> floors = RunHistoryQueries.FlattenFloors(history);
 
         foreach (DojoActSummary act in _run.Acts)
         {
@@ -768,7 +769,7 @@ public partial class DojoRunRow : PanelContainer
             }
             foreach (DojoFightSummary fight in fights)
             {
-                fightColumn.AddChild(BuildFightPill(history, fight, floors));
+                fightColumn.AddChild(BuildFightPill(fight));
             }
 
             strip.AddChild(actBox);
@@ -777,26 +778,18 @@ public partial class DojoRunRow : PanelContainer
         return strip;
     }
 
-    private Control BuildFightPill(
-        RunHistory history, DojoFightSummary fight, IReadOnlyList<MapPointHistoryEntry> floors)
+    private Control BuildFightPill(DojoFightSummary fight)
     {
         string name = DojoDisplayNames.ForSearch(fight.DisplayId);
 
-        Dictionary<int, bool> runCache = PillEligibilityCache.GetOrCreateValue(_run);
-        if (!runCache.TryGetValue(fight.GlobalFloor, out bool eligible))
-        {
-            eligible = fight.GlobalFloor >= 1 && fight.GlobalFloor <= floors.Count
-                && DojoFloorEligibility.IsEligible(history, floors[fight.GlobalFloor - 1], fight.GlobalFloor);
-            runCache[fight.GlobalFloor] = eligible;
-        }
+        bool eligible = IsFightPillEligible(fight);
 
         var pill = new DojoFightPill();
         pill.Configure(name, fight.EncounterId, fight.RoomType, fight.WasDeathFight, eligible);
         if (eligible)
         {
             int floor = fight.GlobalFloor;
-            pill.Released += _ => TaskHelper.RunSafely(DojoReplayConfirmation.ConfirmAndLaunch(
-                history, floor, $"Replay {name}? (Floor {floor})"));
+            pill.Released += _ => TaskHelper.RunSafely(ConfirmAndLaunch(floor, name));
         }
         else
         {
@@ -805,7 +798,53 @@ public partial class DojoRunRow : PanelContainer
         return pill;
     }
 
-    private Control? BuildDeathQuote(RunHistory history)
+    private bool IsFightPillEligible(DojoFightSummary fight)
+    {
+        if (_run.CachedFightEligibility.TryGetValue(fight.GlobalFloor, out bool cached))
+        {
+            return cached;
+        }
+
+        Dictionary<int, bool> runCache = PillEligibilityCache.GetOrCreateValue(_run);
+        if (runCache.TryGetValue(fight.GlobalFloor, out bool eligible))
+        {
+            return eligible;
+        }
+
+        RunHistory? history = History();
+        IReadOnlyList<MapPointHistoryEntry>? floors = FlatFloors(history);
+        eligible = history != null
+            && floors != null
+            && fight.GlobalFloor >= 1
+            && fight.GlobalFloor <= floors.Count
+            && DojoFloorEligibility.IsEligible(history, floors[fight.GlobalFloor - 1], fight.GlobalFloor);
+        runCache[fight.GlobalFloor] = eligible;
+        DojoRunIndex.RememberFightEligibility(_run, fight.GlobalFloor, eligible);
+        return eligible;
+    }
+
+    private async Task ConfirmAndLaunch(int floor, string name)
+    {
+        RunHistory? history = History();
+        if (history == null)
+        {
+            return;
+        }
+
+        await DojoReplayConfirmation.ConfirmAndLaunch(history, floor, $"Replay {name}? (Floor {floor})");
+    }
+
+    private IReadOnlyList<MapPointHistoryEntry>? FlatFloors(RunHistory? history)
+    {
+        if (history == null)
+        {
+            return null;
+        }
+
+        return _flatFloors ??= RunHistoryQueries.FlattenFloors(history);
+    }
+
+    private Control? BuildDeathQuote()
     {
         if (_run.Win)
         {
@@ -814,8 +853,16 @@ public partial class DojoRunRow : PanelContainer
 
         try
         {
-            GameOverType gameOverType = NRunHistory.GetGameOverType(history);
-            string quote = NRunHistory.GetDeathQuote(history, _run.CharacterId, gameOverType);
+            GameOverType gameOverType = GetGameOverType(_run);
+            var quoteRun = new RunHistory
+            {
+                Win = _run.Win,
+                WasAbandoned = _run.WasAbandoned,
+                Seed = _run.Seed,
+                KilledByEncounter = _run.KilledByEncounterId ?? ModelId.none,
+                KilledByEvent = _run.KilledByEventId ?? ModelId.none
+            };
+            string quote = NRunHistory.GetDeathQuote(quoteRun, _run.CharacterId, gameOverType);
             // The quote comes back with the game's rich-text/glyph markup; this screen renders plain
             // labels, so strip any [tags] and show the bare sentence.
             quote = Regex.Replace(quote, @"\[.*?\]", string.Empty).Trim();
@@ -830,6 +877,27 @@ public partial class DojoRunRow : PanelContainer
             MainFile.Logger.Info("[STS2Dojo] Could not build death quote: " + e.Message);
             return null;
         }
+    }
+
+    private static GameOverType GetGameOverType(DojoRunSummary run)
+    {
+        if (run.Win)
+        {
+            return GameOverType.FalseVictory;
+        }
+        if (run.WasAbandoned)
+        {
+            return GameOverType.AbandonedRun;
+        }
+        if (run.KilledByEncounterId != null && run.KilledByEncounterId != ModelId.none)
+        {
+            return GameOverType.CombatDeath;
+        }
+        if (run.KilledByEventId != null && run.KilledByEventId != ModelId.none)
+        {
+            return GameOverType.EventDeath;
+        }
+        return GameOverType.None;
     }
 
     private Control BuildRowMeta()
