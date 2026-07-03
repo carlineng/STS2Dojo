@@ -5,9 +5,11 @@ using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using Godot;
 using MegaCrit.Sts2.addons.mega_text;
+using MegaCrit.Sts2.Core.Assets;
 using MegaCrit.Sts2.Core.ControllerInput;
 using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Localization;
+using MegaCrit.Sts2.Core.Map;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Nodes.CommonUi;
@@ -16,6 +18,7 @@ using MegaCrit.Sts2.Core.Nodes.Multiplayer;
 using MegaCrit.Sts2.Core.Nodes.Screens.GameOverScreen;
 using MegaCrit.Sts2.Core.Nodes.Screens.MainMenu;
 using MegaCrit.Sts2.Core.Nodes.Screens.RunHistoryScreen;
+using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Runs.History;
 using STS2Dojo.STS2DojoCode.Reconstruction;
@@ -235,7 +238,7 @@ public partial class NDojoScreen : NSubmenu
         foreach (CharacterModel character in SafeAllCharacters())
         {
             ModelId id = character.Id;
-            AddFilterChip(characterGrid, _characterChips, DojoDisplayNames.Character(id), selected: false,
+            AddCharacterFilterChip(characterGrid, _characterChips, id, selected: false,
                 () => { _filterCharacter = id; RebuildList(); });
         }
         stack.AddChild(MakeSpacer(8));
@@ -326,6 +329,18 @@ public partial class NDojoScreen : NSubmenu
     private void AddFilterChip(Control parent, List<DojoChip> group, string text, bool selected, Action apply)
     {
         var chip = DojoUi.MakeChip(text, compact: true);
+        AddFilterChip(parent, group, chip, selected, apply);
+    }
+
+    private void AddCharacterFilterChip(
+        Control parent, List<DojoChip> group, ModelId characterId, bool selected, Action apply)
+    {
+        DojoChip chip = DojoUi.MakeCharacterChip(characterId, DojoDisplayNames.Character(characterId));
+        AddFilterChip(parent, group, chip, selected, apply);
+    }
+
+    private void AddFilterChip(Control parent, List<DojoChip> group, DojoChip chip, bool selected, Action apply)
+    {
         chip.Selected = selected;
         chip.Released += _ =>
         {
@@ -561,12 +576,7 @@ public partial class NDojoScreen : NSubmenu
         box.AddThemeConstantOverride("separation", 6);
         box.SizeFlagsVertical = SizeFlags.ShrinkBegin;
 
-        var token = new DojoCharacterToken();
-        token.Configure(
-            DojoDisplayNames.Character(run.CharacterId) is { Length: > 0 } name ? name[..1] : "?",
-            ResolveCharacterColor(run.CharacterId));
-        token.CustomMinimumSize = new Vector2(58, 58);
-        box.AddChild(token);
+        box.AddChild(DojoUi.MakeCharacterToken(run.CharacterId, ResolveCharacterColor(run.CharacterId)));
 
         var ascension = DojoUi.MakeLabel($"A{run.Ascension}", 15, StsColors.gold);
         ascension.HorizontalAlignment = HorizontalAlignment.Center;
@@ -630,29 +640,20 @@ public partial class NDojoScreen : NSubmenu
                 : $"ACT {act.ActIndex + 1}";
             actBox.AddChild(DojoUi.MakeLabel(actName, 13, FaintText));
 
-            var bossLine = new HFlowContainer();
-            bossLine.AddThemeConstantOverride("h_separation", 8);
-            bossLine.AddThemeConstantOverride("v_separation", 6);
-            actBox.AddChild(bossLine);
-            if (act.Bosses.Count == 0)
-            {
-                bossLine.AddChild(DojoUi.MakeLabel("Boss not reached", 14, FaintText));
-            }
-            foreach (DojoFightSummary boss in act.Bosses)
-            {
-                bossLine.AddChild(BuildFightPill(run, history, boss, floors, compact: false));
-            }
+            var fightColumn = new VBoxContainer();
+            fightColumn.AddThemeConstantOverride("separation", 5);
+            actBox.AddChild(fightColumn);
 
-            if (act.Elites.Count > 0)
+            var fights = act.DisplayFights
+                .OrderBy(fight => fight.GlobalFloor)
+                .ToList();
+            if (fights.Count == 0)
             {
-                var eliteLine = new HFlowContainer();
-                eliteLine.AddThemeConstantOverride("h_separation", 6);
-                eliteLine.AddThemeConstantOverride("v_separation", 5);
-                actBox.AddChild(eliteLine);
-                foreach (DojoFightSummary elite in act.Elites)
-                {
-                    eliteLine.AddChild(BuildFightPill(run, history, elite, floors, compact: true));
-                }
+                fightColumn.AddChild(DojoUi.MakeLabel("Boss not reached", 14, FaintText));
+            }
+            foreach (DojoFightSummary fight in fights)
+            {
+                fightColumn.AddChild(BuildFightPill(run, history, fight, floors));
             }
 
             strip.AddChild(actBox);
@@ -672,9 +673,9 @@ public partial class NDojoScreen : NSubmenu
 
     private Control BuildFightPill(
         DojoRunSummary run, RunHistory history, DojoFightSummary fight,
-        IReadOnlyList<MapPointHistoryEntry> floors, bool compact)
+        IReadOnlyList<MapPointHistoryEntry> floors)
     {
-        string name = DojoDisplayNames.Encounter(fight.EncounterId);
+        string name = DojoDisplayNames.ForSearch(fight.DisplayId);
 
         Dictionary<int, bool> runCache = PillEligibilityCache.GetOrCreateValue(run);
         if (!runCache.TryGetValue(fight.GlobalFloor, out bool eligible))
@@ -685,7 +686,7 @@ public partial class NDojoScreen : NSubmenu
         }
 
         var pill = new DojoFightPill();
-        pill.Configure(name, fight.WasDeathFight, eligible, compact);
+        pill.Configure(name, fight.EncounterId, fight.RoomType, fight.WasDeathFight, eligible);
         if (eligible)
         {
             int floor = fight.GlobalFloor;
@@ -840,11 +841,85 @@ internal static class DojoUi
         return label;
     }
 
+    internal static float MeasureTextWidth(string text, int fontSize)
+    {
+        Font? font = UiFont;
+        if (font != null)
+        {
+            return font.GetStringSize(text, HorizontalAlignment.Left, -1, fontSize).X;
+        }
+        return text.Length * fontSize * 0.62f;
+    }
+
     internal static DojoChip MakeChip(string text, bool compact)
     {
         var chip = new DojoChip();
         chip.Configure(text, compact);
         return chip;
+    }
+
+    internal static DojoChip MakeCharacterChip(ModelId characterId, string tooltip)
+    {
+        var chip = new DojoChip();
+        Control icon = MakeCharacterIcon(characterId, 32f);
+        chip.Configure(string.Empty, compact: true, icon);
+        chip.TooltipText = tooltip;
+        return chip;
+    }
+
+    internal static Control MakeCharacterToken(ModelId characterId, Color color)
+    {
+        var token = new PanelContainer();
+        token.CustomMinimumSize = new Vector2(58, 58);
+        token.SizeFlagsHorizontal = Control.SizeFlags.ShrinkCenter;
+        token.MouseFilter = Control.MouseFilterEnum.Ignore;
+
+        StyleBoxFlat style = NDojoScreen.MakePanelStyle(color with { A = 0.30f }, color, 29);
+        style.SetBorderWidthAll(3);
+        style.SetContentMarginAll(5);
+        token.AddThemeStyleboxOverride("panel", style);
+
+        Control icon = MakeCharacterIcon(characterId, 48f);
+        icon.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+        icon.SizeFlagsVertical = Control.SizeFlags.ExpandFill;
+        token.AddChild(icon);
+        return token;
+    }
+
+    private static Control MakeCharacterIcon(ModelId characterId, float size)
+    {
+        Vector2 minimumSize = new(size, size);
+        Texture2D? texture = ResolveCharacterIconTexture(characterId);
+        if (texture != null)
+        {
+            var rect = new TextureRect();
+            rect.Texture = texture;
+            rect.CustomMinimumSize = minimumSize;
+            rect.ExpandMode = (TextureRect.ExpandModeEnum)1;
+            rect.StretchMode = (TextureRect.StretchModeEnum)4;
+            rect.MouseFilter = Control.MouseFilterEnum.Ignore;
+            return rect;
+        }
+
+        string fallbackText = DojoDisplayNames.Character(characterId) is { Length: > 0 } name ? name[..1] : "?";
+        var fallback = MakeLabel(fallbackText, Mathf.RoundToInt(size * 0.56f), StsColors.cream);
+        fallback.CustomMinimumSize = minimumSize;
+        fallback.HorizontalAlignment = HorizontalAlignment.Center;
+        fallback.VerticalAlignment = VerticalAlignment.Center;
+        return fallback;
+    }
+
+    private static Texture2D? ResolveCharacterIconTexture(ModelId characterId)
+    {
+        try
+        {
+            return ModelDb.GetByIdOrNull<CharacterModel>(characterId)?.IconTexture;
+        }
+        catch (Exception e)
+        {
+            MainFile.Logger.Info("[STS2Dojo] Could not resolve character icon for " + characterId + ": " + e.Message);
+            return null;
+        }
     }
 }
 
@@ -859,7 +934,8 @@ public partial class DojoChip : NButton
     private static readonly Color ChipBgSelected = new("3A3524");
     private static readonly Color ChipBorder = new("343D49");
 
-    private Label _label = null!;
+    private Label? _label;
+    private Control? _icon;
     private bool _selected;
     private bool _hovered;
 
@@ -875,19 +951,36 @@ public partial class DojoChip : NButton
         }
     }
 
-    public void Configure(string text, bool compact)
+    public void Configure(string text, bool compact, Control? icon = null)
     {
-        _label = DojoUi.MakeLabel(text, compact ? 15 : 18, StsColors.cream);
-        _label.HorizontalAlignment = HorizontalAlignment.Center;
-        _label.VerticalAlignment = VerticalAlignment.Center;
-        _label.SetAnchorsPreset(LayoutPreset.FullRect);
-        _label.OffsetLeft = compact ? 14 : 18;
-        _label.OffsetRight = compact ? -14 : -18;
-        AddChild(_label);
+        int fontSize = compact ? 15 : 18;
+        bool iconOnly = icon != null && text.Length == 0;
+        if (icon != null)
+        {
+            _icon = icon;
+            _icon.MouseFilter = MouseFilterEnum.Ignore;
+            _icon.SetAnchorsPreset(LayoutPreset.FullRect);
+            _icon.OffsetLeft = iconOnly ? 5 : 8;
+            _icon.OffsetTop = iconOnly ? 4 : 8;
+            _icon.OffsetRight = iconOnly ? -5 : -8;
+            _icon.OffsetBottom = iconOnly ? -4 : -8;
+            AddChild(_icon);
+        }
+        if (text.Length > 0)
+        {
+            _label = DojoUi.MakeLabel(text, fontSize, StsColors.cream);
+            _label.HorizontalAlignment = HorizontalAlignment.Center;
+            _label.VerticalAlignment = VerticalAlignment.Center;
+            _label.SetAnchorsPreset(LayoutPreset.FullRect);
+            _label.OffsetLeft = compact ? 14 : 18;
+            _label.OffsetRight = compact ? -14 : -18;
+            AddChild(_label);
+        }
 
-        CustomMinimumSize = new Vector2(
-            _label.GetMinimumSize().X + (compact ? 28 : 36),
-            compact ? 36 : 48);
+        float width = iconOnly
+            ? 46
+            : DojoUi.MeasureTextWidth(text, fontSize) + (compact ? 30 : 38);
+        CustomMinimumSize = new Vector2(width, compact ? 36 : 48);
         FocusMode = FocusModeEnum.All;
         MouseFilter = MouseFilterEnum.Stop;
     }
@@ -928,6 +1021,12 @@ public partial class DojoChip : NButton
             _label.AddThemeColorOverride("font_color",
                 _selected ? StsColors.gold : IsEnabled ? StsColors.cream : StsColors.gray);
         }
+        if (_icon is CanvasItem iconCanvas)
+        {
+            iconCanvas.Modulate = IsEnabled
+                ? (_selected ? Colors.White : new Color(0.78f, 0.82f, 0.86f))
+                : StsColors.gray;
+        }
         QueueRedraw();
     }
 }
@@ -947,12 +1046,20 @@ public partial class DojoBackChip : DojoChip
 }
 
 /// <summary>
-/// A boss/elite fight pill on a run row. Outcome is shown as a small marker dot (green = cleared,
-/// red = the fight the player died in); ineligible fights (content that no longer resolves — see
-/// DojoFloorEligibility) render dimmed with no click handler.
+/// A boss/elite fight pill on a run row. The icon comes from the same run-history map art as the stock
+/// history screen; the pill border is green for cleared fights and red for the fight that killed the player.
+/// Ineligible fights (content that no longer resolves — see DojoFloorEligibility) render dimmed with no
+/// click handler.
 /// </summary>
 public partial class DojoFightPill : NButton
 {
+    private const int FightFontSize = 15;
+    private const float PillHeight = 34f;
+    private const float IconSize = 23f;
+    private const float IconLeft = 11f;
+    private const float LabelLeft = 42f;
+    private const float LabelRight = 14f;
+
     private static readonly Color PillBg = new("242B35");
     private static readonly Color PillBgHover = new("30394A");
     private static readonly Color PillBorder = new("39424F");
@@ -963,30 +1070,28 @@ public partial class DojoFightPill : NButton
     private bool _death;
     private bool _eligible;
     private bool _hovered;
-    private bool _compact;
 
     protected override string[] Hotkeys => Array.Empty<string>();
 
-    public void Configure(string text, bool wasDeathFight, bool eligible, bool compact)
+    public void Configure(string text, ModelId encounterId, RoomType roomType, bool wasDeathFight, bool eligible)
     {
         _death = wasDeathFight;
         _eligible = eligible;
-        _compact = compact;
 
-        int fontSize = compact ? 14 : 16;
+        AddEncounterIcon(encounterId, roomType);
+
         Color textColor = eligible ? StsColors.cream : StsColors.gray;
-        _label = DojoUi.MakeLabel(text, fontSize, textColor);
+        _label = DojoUi.MakeLabel(text, FightFontSize, textColor);
         _label.HorizontalAlignment = HorizontalAlignment.Center;
         _label.VerticalAlignment = VerticalAlignment.Center;
         _label.SetAnchorsPreset(LayoutPreset.FullRect);
-        // Leave room on the left for the outcome marker dot.
-        _label.OffsetLeft = compact ? 24 : 28;
-        _label.OffsetRight = compact ? -12 : -14;
+        _label.OffsetLeft = LabelLeft;
+        _label.OffsetRight = -LabelRight;
         AddChild(_label);
 
         CustomMinimumSize = new Vector2(
-            _label.GetMinimumSize().X + (compact ? 40 : 46),
-            compact ? 32 : 40);
+            Mathf.Ceil(DojoUi.MeasureTextWidth(text, FightFontSize) + LabelLeft + LabelRight),
+            PillHeight);
         FocusMode = eligible ? FocusModeEnum.All : FocusModeEnum.None;
         MouseFilter = MouseFilterEnum.Stop;
 
@@ -997,6 +1102,37 @@ public partial class DojoFightPill : NButton
         }
     }
 
+    private void AddEncounterIcon(ModelId encounterId, RoomType roomType)
+    {
+        MapPointType mapPointType = roomType switch
+        {
+            RoomType.Boss => MapPointType.Boss,
+            RoomType.Elite => MapPointType.Elite,
+            _ => MapPointType.Monster
+        };
+        ModelId? iconModelId = roomType == RoomType.Boss ? encounterId : null;
+
+        string? iconPath = ImageHelper.GetRoomIconPath(mapPointType, roomType, iconModelId);
+        if (iconPath != null)
+        {
+            Texture2D icon = PreloadManager.Cache.GetCompressedTexture2D(iconPath);
+            AddChild(MakeIconRect(icon, Colors.White));
+        }
+    }
+
+    private static TextureRect MakeIconRect(Texture2D texture, Color modulate)
+    {
+        var rect = new TextureRect();
+        rect.Texture = texture;
+        rect.ExpandMode = (TextureRect.ExpandModeEnum)1;
+        rect.StretchMode = (TextureRect.StretchModeEnum)4;
+        rect.MouseFilter = MouseFilterEnum.Ignore;
+        rect.Position = new Vector2(IconLeft, (PillHeight - IconSize) / 2f);
+        rect.Size = new Vector2(IconSize, IconSize);
+        rect.Modulate = modulate;
+        return rect;
+    }
+
     public override void _Ready()
     {
         ConnectSignals();
@@ -1005,18 +1141,10 @@ public partial class DojoFightPill : NButton
     public override void _Draw()
     {
         Color bg = _eligible && _hovered ? PillBgHover : PillBg;
-        Color border = _eligible && _hovered ? StsColors.gold : PillBorder;
+        Color border = _eligible ? (_death ? DeathMarker : ClearedMarker) : PillBorder;
         StyleBoxFlat style = NDojoScreen.MakePanelStyle(bg, border, (int)(Size.Y / 2f));
+        style.SetBorderWidthAll(_eligible ? 2 : 1);
         style.Draw(GetCanvasItem(), new Rect2(Vector2.Zero, Size));
-
-        float radius = _compact ? 3.5f : 4.5f;
-        var markerCenter = new Vector2(_compact ? 13f : 15f, Size.Y / 2f);
-        Color marker = _death ? DeathMarker : ClearedMarker;
-        if (!_eligible)
-        {
-            marker = marker with { A = 0.5f };
-        }
-        DrawCircle(markerCenter, radius, marker);
     }
 
     protected override void OnFocus()
@@ -1034,31 +1162,5 @@ public partial class DojoFightPill : NButton
         base.OnUnfocus();
         _hovered = false;
         QueueRedraw();
-    }
-}
-
-/// <summary>The colored circular character token at the left of each run row: _Draw renders the circle,
-/// a plain Label child renders the letter.</summary>
-public partial class DojoCharacterToken : Control
-{
-    private Color _color = StsColors.gray;
-
-    public void Configure(string letter, Color color)
-    {
-        _color = color;
-        Label label = DojoUi.MakeLabel(letter, 26, StsColors.cream);
-        label.HorizontalAlignment = HorizontalAlignment.Center;
-        label.VerticalAlignment = VerticalAlignment.Center;
-        label.SetAnchorsPreset(LayoutPreset.FullRect);
-        AddChild(label);
-        MouseFilter = MouseFilterEnum.Ignore;
-    }
-
-    public override void _Draw()
-    {
-        float radius = Mathf.Min(Size.X, Size.Y) / 2f;
-        Vector2 center = Size / 2f;
-        DrawCircle(center, radius, _color with { A = 0.30f });
-        DrawArc(center, radius - 1.5f, 0f, Mathf.Tau, 48, _color, 3f, true);
     }
 }

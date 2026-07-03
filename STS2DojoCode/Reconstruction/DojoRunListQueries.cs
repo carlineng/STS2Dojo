@@ -36,7 +36,7 @@ public sealed record DojoRunFilter(
 
 /// <summary>
 /// Pure filtering/sorting over precomputed <see cref="DojoRunSummary"/> rows. Display names for the
-/// search box (character, boss/elite encounter names) come through <paramref name="resolveName"/> so
+/// search box (character, displayed encounter names) come through <paramref name="resolveName"/> so
 /// this stays testable without ModelDb/localization — in-game the resolver wraps
 /// CharacterModel.Title / EncounterModel.Title lookups (see DojoRunIndex).
 /// </summary>
@@ -91,9 +91,11 @@ public static class DojoRunListQueries
 
         foreach (DojoActSummary act in run.Acts)
         {
-            foreach (DojoFightSummary fight in act.Bosses.Concat(act.Elites))
+            foreach (DojoFightSummary fight in act.DisplayFights)
             {
-                if (Contains(resolveName(fight.EncounterId), search)
+                if (Contains(resolveName(fight.DisplayId), search)
+                    || Contains(resolveName(fight.EncounterId), search)
+                    || Contains(fight.DisplayId.ToString(), search)
                     || Contains(fight.EncounterId.ToString(), search))
                 {
                     return true;
