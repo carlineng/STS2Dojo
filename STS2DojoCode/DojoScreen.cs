@@ -820,7 +820,7 @@ public sealed class DojoRunRow
 
             var fightRow = new HBoxContainer();
             fightRow.AddThemeConstantOverride("separation", 8);
-            actRow.AddChild(fightRow);
+            fightRow.SizeFlagsVertical = SizeFlags.ShrinkCenter;
 
             var fights = act.DisplayFights
                 .OrderBy(fight => fight.GlobalFloor)
@@ -833,6 +833,18 @@ public sealed class DojoRunRow
             {
                 fightRow.AddChild(BuildFightPill(fight));
             }
+
+            // Same wrap BuildFloorMap uses for a wide act strip: a run with several elites in one act can
+            // overflow the pills' fixed (display-name-based) widths past the row's available space, which
+            // would otherwise push the meta column off-screen since the outer run list has horizontal
+            // scroll disabled. Vertical scroll disabled so a vertical wheel keeps scrolling the outer list.
+            var fightScroll = new ScrollContainer();
+            fightScroll.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+            fightScroll.SizeFlagsVertical = SizeFlags.ShrinkCenter;
+            fightScroll.HorizontalScrollMode = ScrollContainer.ScrollMode.Auto;
+            fightScroll.VerticalScrollMode = ScrollContainer.ScrollMode.Disabled;
+            fightScroll.AddChild(fightRow);
+            actRow.AddChild(fightScroll);
 
             strip.AddChild(actRow);
         }

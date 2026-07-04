@@ -96,26 +96,28 @@ public static class DojoLaunch
 
         RunManager.Instance.SetUpNewSingleplayer(runState, shouldSave: false);
 
-        // Boss music fix: RunState.CreateForNewRun always starts CurrentActIndex at 0, and nothing else
-        // ever corrects it here (EnterAct is the only other writer, and it's deliberately skipped above).
-        // NRun._Ready() calls RunMusicController.UpdateMusic() the moment the scene is created below, which
-        // loads the FMOD bank for runState.Act (= Acts[CurrentActIndex]) - if that's still Act 1 while
-        // launching an Act 2/3 fight, the boss's specific CustomBgm event (CombatManager.StartCombatInternal
-        // -> PlayCustomMusic) isn't in any loaded bank and silently fails to play. Elite/normal fights don't
-        // show the symptom because their music is just a generic "Elite"/"Normal" progress parameter on
-        // whatever ambient track is already loaded, not a specific per-boss event. Fix: point CurrentActIndex
-        // (and swap in the correct act variant - see FixActForEncounter) at whichever act actually owns this
-        // encounter before the scene exists.
-        FixActForEncounter(runState, encounter);
-
-        // Kills the replays/latest.mcr write leak at the source (every write site in CombatReplayWriter /
-        // CombatManager / RunManager.CleanUp checks IsEnabled first) — no Harmony patch needed for this one.
-        RunManager.Instance.CombatReplayWriter.IsEnabled = false;
-
-        DojoRunRegistry.MarkAsDojo(runState);
-
         try
         {
+            // Boss music fix: RunState.CreateForNewRun always starts CurrentActIndex at 0, and nothing else
+            // ever corrects it here (EnterAct is the only other writer, and it's deliberately skipped above).
+            // NRun._Ready() calls RunMusicController.UpdateMusic() the moment the scene is created below,
+            // which loads the FMOD bank for runState.Act (= Acts[CurrentActIndex]) - if that's still Act 1
+            // while launching an Act 2/3 fight, the boss's specific CustomBgm event
+            // (CombatManager.StartCombatInternal -> PlayCustomMusic) isn't in any loaded bank and silently
+            // fails to play. Elite/normal fights don't show the symptom because their music is just a
+            // generic "Elite"/"Normal" progress parameter on whatever ambient track is already loaded, not a
+            // specific per-boss event. Fix: point CurrentActIndex (and swap in the correct act variant - see
+            // FixActForEncounter) at whichever act actually owns this encounter before the scene exists.
+            // Inside this try block (not between it and SetUpNewSingleplayer above) because it does real
+            // content lookups/RNG work that can throw - see the catch below for why that matters.
+            FixActForEncounter(runState, encounter);
+
+            // Kills the replays/latest.mcr write leak at the source (every write site in CombatReplayWriter /
+            // CombatManager / RunManager.CleanUp checks IsEnabled first) — no Harmony patch needed for this one.
+            RunManager.Instance.CombatReplayWriter.IsEnabled = false;
+
+            DojoRunRegistry.MarkAsDojo(runState);
+
             using (new NetLoadingHandle(RunManager.Instance.NetService))
             {
                 await PreloadManager.LoadRunAssets(runState.Players.Select(p => p.Character));
@@ -133,12 +135,13 @@ public static class DojoLaunch
         }
         catch
         {
-            // mutate(...) (e.g. RunReconstructor content resolution) or the asset/scene setup above can
-            // throw with a live, never-entered RunState already installed via SetUpNewSingleplayer. Left
-            // in place, RunManager.State stays occupied: RunManager.SetUpNewSingleplayer throws
-            // "State is already set." for ANY subsequent run — Dojo or a real player run — until
-            // something else happens to call CleanUp() first. Recover immediately rather than leaving the
-            // session poisoned; the caller's own catch block still logs the original exception.
+            // FixActForEncounter, mutate(...) (e.g. RunReconstructor content resolution), or the asset/scene
+            // setup above can throw with a live, never-entered RunState already installed via
+            // SetUpNewSingleplayer. Left in place, RunManager.State stays occupied:
+            // RunManager.SetUpNewSingleplayer throws "State is already set." for ANY subsequent run — Dojo
+            // or a real player run — until something else happens to call CleanUp() first. Recover
+            // immediately rather than leaving the session poisoned; the caller's own catch block still logs
+            // the original exception.
             RunManager.Instance.CleanUp();
             throw;
         }
