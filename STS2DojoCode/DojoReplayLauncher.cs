@@ -103,76 +103,19 @@ public static class DojoReplayLauncher
                 // SavedProperties.Fill, the same way a mid-run save reload restores relic counters.
                 adjustments?.ApplyTo(loadout);
 
-                // Replace the auto-populated starting inventory with the reconstructed one. Cards use
-                // silent:true + one InvokeCardAddFinished() flush at the end (CardPile's intended pattern
-                // for a bulk rebuild — see NTopBarDeckButton, which only refreshes on CardAddFinished/
-                // CardRemoveFinished, not the per-card CardAdded event). Relics/potions have no such
-                // batching hook, but silent:true is still passed for consistency — no UI exists to
-                // receive RelicObtained/RelicRemoved/PotionUsed events yet at this point in the sequence
-                // (the run's scene isn't created until after this callback returns), so it's a no-op today,
-                // just future-proofing against that changing.
-                player.Deck.Clear(silent: true);
-                foreach (RelicModel relic in player.Relics.ToList())
-                {
-                    player.RemoveRelicInternal(relic, silent: true);
-                }
-                foreach (PotionModel potion in player.Potions.ToList())
-                {
-                    player.DiscardPotionInternal(potion, silent: true);
-                }
-
-                foreach (ProvenancedCard pc in loadout.Deck)
-                {
-                    // Must go through RunState.LoadCard (not CardModel.FromSerializable directly) — it's
-                    // what sets CardModel.Owner and registers the card with the run. Skipping it leaves
-                    // Owner null, which NREs the first time the hook system walks the deck
-                    // (RunState.Contains).
-                    CardModel card = runState.LoadCard(pc.Card, player);
-                    player.Deck.AddInternal(card, index: -1, silent: true);
-                }
-                player.Deck.InvokeCardAddFinished();
-
-                foreach (ProvenancedRelic pr in loadout.Relics)
-                {
-                    // Deliberately NOT calling RelicModel.AfterObtained() here. AfterObtained() applies a
-                    // relic's one-time PICKUP effect (e.g. Pear/Mango permanent Max HP boosts,
-                    // Whetstone/GnarledHammer one-time card upgrades, and several relics that pop an
-                    // interactive card-selection/reward screen). Every reconstructed relic here was
-                    // already picked up earlier in the ORIGINAL run, and its effect is already baked into
-                    // the run file's logged HP/gold/card-upgrade values that RunReconstructor reads
-                    // directly — calling AfterObtained() again would double-apply stat effects and pop
-                    // inappropriate UI prompts mid-launch. This is intentional, not a missed call.
-                    player.AddRelicInternal(RelicModel.FromSerializable(pr.Relic), index: -1, silent: true);
-                }
-
-                // Reconcile potion slot count to loadout.MaxPotionSlots (ascension's Tight Belt baseline +
-                // any Potion Belt/Alchemical Coffer/Phial Holster picked up — see RunReconstructor). The
-                // throwaway player already gets the ascension reduction automatically (RunManager's launch
-                // sequence applies AscensionManager.ApplyEffectsTo for every new player), but NOT the
-                // relic-based bonuses, since reconstructed relics deliberately skip AfterObtained() (see
-                // the relic loop above) — so this reconciles explicitly rather than assuming either side
-                // is already correct. Do NOT just grow to fit loadout.Potions.Count: that would silently
-                // paper over a reconstruction bug if the potion count and the true slot count ever
-                // disagree, instead of surfacing it.
-                int slotDelta = loadout.MaxPotionSlots - player.MaxPotionCount;
-                if (slotDelta > 0)
-                {
-                    player.AddToMaxPotionCount(slotDelta);
-                }
-                else if (slotDelta < 0)
-                {
-                    player.SubtractFromMaxPotionCount(-slotDelta);
-                }
-
-                foreach (ProvenancedPotion pp in loadout.Potions)
-                {
-                    player.AddPotionInternal(PotionModel.FromSerializable(new SerializablePotion { Id = pp.PotionId }),
-                        slotIndex: -1, silent: true);
-                }
-
-                player.Gold = loadout.Gold;
-                player.Creature.SetMaxHpInternal(loadout.MaxHp);
-                player.Creature.SetCurrentHpInternal(loadout.CurrentHp);
+                // Replace the auto-populated starting inventory with the reconstructed one, via the
+                // shared applier (also used by the §12 shared-fight import path) — the subtle
+                // LoadCard/silent/slot-reconcile sequence and its rationale live there.
+                DojoLoadoutApplier.Apply(
+                    runState,
+                    player,
+                    loadout.Deck.Select(pc => pc.Card).ToList(),
+                    loadout.Relics.Select(pr => pr.Relic).ToList(),
+                    loadout.Potions.Select(pp => new SerializablePotion { Id = pp.PotionId }).ToList(),
+                    loadout.MaxPotionSlots,
+                    loadout.Gold,
+                    loadout.MaxHp,
+                    loadout.CurrentHp);
 
                 MainFile.Logger.Info(
                     $"[STS2Dojo] Replay launch: '{encounterId.Entry}' character={character.Id.Entry} " +

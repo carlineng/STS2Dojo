@@ -141,6 +141,7 @@ DecisionTestRunner.Run();
 PotionReconstructionAcceptanceRunner.Run();
 DojoRunBrowserLogicRunner.Run();
 DojoRunIndexCacheRunner.Run();
+SeedSharingRunner.Run();
 
 internal sealed record ReconstructorFixture(
     string Name,
