@@ -546,12 +546,12 @@ public partial class NDojoScreen : NSubmenu
 /// tree: on the main thread <c>AddChild</c> runs the icons' <c>_Ready</c> synchronously, so their
 /// %QuestIcon/texture references exist by then (this mirrors <c>NRunHistory.DisplayRun</c> → <c>SelectPlayer</c>).
 ///
-/// NOT a Node subclass: mod C# classes that derive directly from a Godot built-in (rather than from a
-/// game class like <c>NButton</c>/<c>NSubmenu</c>) get a broken script-dispatch bridge in the modded game —
-/// every engine call into them throws, and the engine renders the swallowed exception as a literal
-/// "&lt;null&gt;" native tooltip on hover (CLAUDE.md §5m). So this is a plain class owning a script-less
-/// <see cref="PanelContainer"/> (<see cref="Root"/>); the toggle/pill closures keep the instance alive for
-/// exactly as long as its root is in the tree.
+/// NOT a Node subclass: as a node this class had a broken script-dispatch bridge in the modded game —
+/// every engine call into it threw, and the engine renders the swallowed exception as a literal
+/// "&lt;null&gt;" native tooltip on hover (CLAUDE.md §5m; the exact discriminator for which mod script
+/// classes break is unknown — two theories were falsified in-game). So this is a plain class owning a
+/// script-less <see cref="PanelContainer"/> (<see cref="Root"/>) — no script instance, nothing to throw;
+/// the toggle/pill closures keep the instance alive for exactly as long as its root is in the tree.
 /// </summary>
 public sealed class DojoRunRow
 {
