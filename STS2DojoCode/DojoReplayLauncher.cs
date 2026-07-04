@@ -72,56 +72,8 @@ public static class DojoReplayLauncher
 
             // The mutate callback runs before the run's scene is created (see DojoLaunch.cs's class docs)
             // — this is what fixes the previously-invisible relic icons (CLAUDE.md §5a point 6).
-            await DojoLaunch.LaunchThrowawayRun(game, character, run.Ascension, encounterId, mutate: runState =>
-            {
-                Player player = runState.Players[0];
-
-                // Snapshot the TRUE ascension-adjusted starting inventory (e.g. Ascender's Bane at high
-                // ascension) that LaunchThrowawayRun just auto-populated, before we replace it.
-                List<SerializableCard> startingDeck = player.Deck.Cards.Select(c => c.ToSerializable()).ToList();
-                List<SerializableRelic> startingRelics = player.Relics.Select(r => r.ToSerializable()).ToList();
-                int startingHp = player.Creature.MaxHp;
-                int startingGold = player.Gold;
-
-                ReconstructedLoadout loadout = RunReconstructor.Reconstruct(
-                    run, globalFloor, startingDeck, startingRelics, startingHp, startingGold);
-
-                // Refuse the fight if it depends on content that no longer resolves (renamed/removed
-                // encounter/card/relic since this run was played, or content from an uninstalled mod - see
-                // CLAUDE.md §6). Thrown before any player mutation below, so DojoLaunch's existing
-                // mutate-failure recovery (RunManager.CleanUp(), no scene ever created) handles teardown.
-                DojoContentEligibilityResult eligibility =
-                    DojoContentEligibility.Validate(loadout, LiveDojoContentResolver.Instance);
-                if (!eligibility.IsEligible)
-                {
-                    throw new DojoContentEligibilityException(eligibility.MissingContent);
-                }
-
-                // Player-tuned relic/card counter state from the Replay Setup modal. Stamped onto the
-                // freshly-reconstructed serializable DTOs (per-launch instances, safe to mutate) so the
-                // values restore through the game's own save pipeline: FromSerializable below calls
-                // SavedProperties.Fill, the same way a mid-run save reload restores relic counters.
-                adjustments?.ApplyTo(loadout);
-
-                // Replace the auto-populated starting inventory with the reconstructed one, via the
-                // shared applier (also used by the §12 shared-fight import path) — the subtle
-                // LoadCard/silent/slot-reconcile sequence and its rationale live there.
-                DojoLoadoutApplier.Apply(
-                    runState,
-                    player,
-                    loadout.Deck.Select(pc => pc.Card).ToList(),
-                    loadout.Relics.Select(pr => pr.Relic).ToList(),
-                    loadout.Potions.Select(pp => new SerializablePotion { Id = pp.PotionId }).ToList(),
-                    loadout.MaxPotionSlots,
-                    loadout.Gold,
-                    loadout.MaxHp,
-                    loadout.CurrentHp);
-
-                MainFile.Logger.Info(
-                    $"[STS2Dojo] Replay launch: '{encounterId.Entry}' character={character.Id.Entry} " +
-                    $"deck={loadout.Deck.Count} relics={loadout.Relics.Count} hp={loadout.CurrentHp}/{loadout.MaxHp} " +
-                    $"gold={loadout.Gold} ascension={loadout.Ascension} stateAdjustments={adjustments?.Count ?? 0}.");
-            });
+            await DojoLaunch.LaunchThrowawayRun(game, character, run.Ascension, encounterId,
+                BuildMutate(run, globalFloor, encounterId, character, adjustments));
         }
         catch (DojoContentEligibilityException e)
         {
@@ -132,5 +84,99 @@ public static class DojoReplayLauncher
         {
             MainFile.Logger.Error("[STS2Dojo] Dojo replay launch failed: " + e);
         }
+    }
+
+    /// <summary>§12a entry point 2: runs the identical reconstruct-and-mutate sequence as
+    /// <see cref="LaunchReplay(RunHistory,int,ModelId,DojoStateAdjustments?)"/> through
+    /// <see cref="DojoLaunch.PrepareSnapshot"/> — capture without ever entering combat, for the Replay
+    /// Setup modal's Export button. Returns null on any failure (already logged); the caller only needs
+    /// success/failure for its button feedback.</summary>
+    public static async Task<SeedSharing.DojoFightSnapshot?> PrepareReplaySnapshot(
+        RunHistory run, int globalFloor, DojoStateAdjustments? adjustments = null)
+    {
+        try
+        {
+            NGame? game = NGame.Instance;
+            if (game == null)
+            {
+                MainFile.Logger.Error("[STS2Dojo] NGame.Instance is null; cannot capture a Dojo fight.");
+                return null;
+            }
+
+            ModelId encounterId = ResolveEncounterId(run, globalFloor);
+            CharacterModel character = ModelDb.GetById<CharacterModel>(run.Players.Single().Character);
+
+            return await DojoLaunch.PrepareSnapshot(game, character, run.Ascension, encounterId,
+                BuildMutate(run, globalFloor, encounterId, character, adjustments));
+        }
+        catch (DojoContentEligibilityException e)
+        {
+            MainFile.Logger.Error("[STS2Dojo] " + e.Message);
+            return null;
+        }
+        catch (Exception e)
+        {
+            MainFile.Logger.Error("[STS2Dojo] Dojo fight capture failed: " + e);
+            return null;
+        }
+    }
+
+    /// <summary>The reconstruction+apply mutate callback shared by real launches and prepare-only
+    /// captures — the two MUST stay sequence-identical or an entry-point-2 export would diverge from an
+    /// entry-point-1 export of the same setup (CLAUDE.md §12a parity note).</summary>
+    private static Action<RunState> BuildMutate(
+        RunHistory run, int globalFloor, ModelId encounterId, CharacterModel character,
+        DojoStateAdjustments? adjustments)
+    {
+        return runState =>
+        {
+            Player player = runState.Players[0];
+
+            // Snapshot the TRUE ascension-adjusted starting inventory (e.g. Ascender's Bane at high
+            // ascension) that LaunchThrowawayRun just auto-populated, before we replace it.
+            List<SerializableCard> startingDeck = player.Deck.Cards.Select(c => c.ToSerializable()).ToList();
+            List<SerializableRelic> startingRelics = player.Relics.Select(r => r.ToSerializable()).ToList();
+            int startingHp = player.Creature.MaxHp;
+            int startingGold = player.Gold;
+
+            ReconstructedLoadout loadout = RunReconstructor.Reconstruct(
+                run, globalFloor, startingDeck, startingRelics, startingHp, startingGold);
+
+            // Refuse the fight if it depends on content that no longer resolves (renamed/removed
+            // encounter/card/relic since this run was played, or content from an uninstalled mod - see
+            // CLAUDE.md §6). Thrown before any player mutation below, so DojoLaunch's existing
+            // mutate-failure recovery (RunManager.CleanUp(), no scene ever created) handles teardown.
+            DojoContentEligibilityResult eligibility =
+                DojoContentEligibility.Validate(loadout, LiveDojoContentResolver.Instance);
+            if (!eligibility.IsEligible)
+            {
+                throw new DojoContentEligibilityException(eligibility.MissingContent);
+            }
+
+            // Player-tuned relic/card counter state from the Replay Setup modal. Stamped onto the
+            // freshly-reconstructed serializable DTOs (per-launch instances, safe to mutate) so the
+            // values restore through the game's own save pipeline: FromSerializable below calls
+            // SavedProperties.Fill, the same way a mid-run save reload restores relic counters.
+            adjustments?.ApplyTo(loadout);
+
+            // Replace the auto-populated starting inventory with the reconstructed one, via the
+            // shared applier (also used by the §12 shared-fight import path) — the subtle
+            // LoadCard/silent/slot-reconcile sequence and its rationale live there.
+            DojoLoadoutApplier.Apply(
+                runState,
+                player,
+                loadout.Deck.Select(pc => pc.Card).ToList(),
+                loadout.Relics.Select(pr => pr.Relic).ToList(),
+                loadout.Potions.Select(pp => new SerializablePotion { Id = pp.PotionId }).ToList(),
+                loadout.MaxPotionSlots,
+                loadout.Gold,
+                loadout.MaxHp,
+                loadout.CurrentHp);
+
+            MainFile.Logger.Info(
+                $"[STS2Dojo] Replay loadout applied: '{encounterId.Entry}' character={character.Id.Entry} " +
+                $"deck={loadout.Deck.Count} relics={loadout.Relics.Count} hp={loadout.CurrentHp}/{loadout.MaxHp} " +
+                $"gold={loadout.Gold} ascension={loadout.Ascension} stateAdjustments={adjustments?.Count ?? 0}.");
+        };
     }
 }

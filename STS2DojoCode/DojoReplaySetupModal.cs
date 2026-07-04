@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
 using Godot;
 using MegaCrit.Sts2.addons.mega_text;
 using MegaCrit.Sts2.Core.Assets;
@@ -13,6 +15,7 @@ using MegaCrit.Sts2.Core.Nodes.Screens.ScreenContext;
 using MegaCrit.sts2.Core.Nodes.TopBar;
 using MegaCrit.Sts2.Core.Runs;
 using STS2Dojo.STS2DojoCode.Reconstruction;
+using STS2Dojo.STS2DojoCode.SeedSharing;
 using SizeFlags = Godot.Control.SizeFlags;
 
 namespace STS2Dojo.STS2DojoCode;
@@ -68,6 +71,9 @@ public partial class NDojoReplaySetupModal : NTopBarPortrait, IScreenContext
     private readonly List<StateRow> _rows = new();
     private NPopupYesNoButton? _startButton;
     private NPopupYesNoButton? _cancelButton;
+    private DojoPresetChip? _exportChip;
+    private Label? _exportChipLabel;
+    private bool _exportInFlight;
 
     public Control? DefaultFocusedControl => _startButton;
 
@@ -737,6 +743,19 @@ public partial class NDojoReplaySetupModal : NTopBarPortrait, IScreenContext
         spacer.SizeFlagsHorizontal = SizeFlags.ExpandFill;
         bar.AddChild(spacer);
 
+        // §12a entry point 2: capture-and-export without playing. A preset-chip (not a third
+        // NPopupYesNoButton) on purpose — IsYes wiring re-registers confirm/cancel hotkeys, and this
+        // action must never steal ESC/confirm from Cancel/Start.
+        _exportChip = new DojoPresetChip();
+        _exportChip.Configure("Export Fight Code");
+        _exportChip.SizeFlagsVertical = SizeFlags.ShrinkCenter;
+        _exportChipLabel = _exportChip.GetChildren().OfType<Label>().FirstOrDefault();
+        bar.AddChild(_exportChip);
+
+        var spacer2 = new Control();
+        spacer2.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        bar.AddChild(spacer2);
+
         _startButton!.CustomMinimumSize = buttonSize;
         _startButton.SizeFlagsHorizontal = SizeFlags.ShrinkEnd;
         _startButton.SizeFlagsVertical = SizeFlags.ShrinkCenter;
@@ -768,6 +787,48 @@ public partial class NDojoReplaySetupModal : NTopBarPortrait, IScreenContext
             NModalContainer.Instance?.Clear();
             TaskHelper.RunSafely(DojoReplayLauncher.LaunchReplay(history, floor, adjustments));
         };
+
+        if (_exportChip != null)
+        {
+            _exportChip.Released += _ => TaskHelper.RunSafely(ExportWithoutPlaying());
+        }
+    }
+
+    /// <summary>Runs the §12a prepare-only capture (identical sequence to Start, minus entering combat)
+    /// with the CURRENT stepper/preset values baked in, then saves+copies via the shared exporter. The
+    /// modal stays open — Start afterwards plays a fresh seed, which is expected: the export is its own
+    /// fight, not a preview of the next launch.</summary>
+    private async Task ExportWithoutPlaying()
+    {
+        if (_exportInFlight)
+        {
+            return;
+        }
+        _exportInFlight = true;
+        SetExportChipText("Exporting…");
+        try
+        {
+            DojoFightSnapshot? snapshot =
+                await DojoReplayLauncher.PrepareReplaySnapshot(_history, _globalFloor, BuildAdjustments());
+            SharedFightExporter.ExportResult result = SharedFightExporter.Export(snapshot);
+            SetExportChipText(result.Message);
+        }
+        finally
+        {
+            _exportInFlight = false;
+        }
+    }
+
+    private void SetExportChipText(string text)
+    {
+        if (_exportChip == null || _exportChipLabel == null)
+        {
+            return;
+        }
+        _exportChipLabel.Text = text;
+        // Mirrors DojoPresetChip.Configure's sizing (13px font + 26px padding) — Configure itself can't
+        // be re-run, it adds a fresh label each call.
+        _exportChip.CustomMinimumSize = new Vector2(DojoUi.MeasureTextWidth(text, 13) + 26, 27f);
     }
 
     private DojoStateAdjustments BuildAdjustments()
