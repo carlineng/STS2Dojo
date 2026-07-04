@@ -2,13 +2,11 @@
   "id": "STS2Dojo",
   "name": "STS2Dojo",
   "author": "carlineng",
-  "description": "Slay the Spire 2 mod created from a template for use with BaseLib",
+  "description": "Replay specific fights from your run history with a reconstructed loadout",
   "version": "v0.0.0",
   "min_game_version": "0.107.0",
   "has_pck": false,
   "has_dll": true,
-  "dependencies": [
-    {"id": "BaseLib", "min_version": "3.3.2"}
-  ],
+  "dependencies": [],
   "affects_gameplay": true
 }
