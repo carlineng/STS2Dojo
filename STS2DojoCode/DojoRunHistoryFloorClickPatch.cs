@@ -23,7 +23,8 @@ namespace STS2Dojo.STS2DojoCode;
 /// before a click. Its built-in hover-stats tooltip (<c>NMapPointHistoryEntry.OnFocus</c>) is deliberately
 /// left working (no <c>Disable()</c> call) — the player may still want to see what happened on that
 /// floor.</item>
-/// <item>An eligible combat floor gets a <c>Released</c> handler that prompts and launches the replay.</item>
+/// <item>An eligible combat floor gets a <c>Released</c> handler that opens the Replay Setup modal
+/// (<see cref="NDojoReplaySetupModal"/>), from which the player launches the replay.</item>
 /// </list>
 /// </summary>
 [HarmonyPatch(typeof(NMapPointHistoryEntry), nameof(NMapPointHistoryEntry.Create))]
@@ -75,7 +76,6 @@ public static class DojoFloorClickPatch
             return;
         }
 
-        __result.Released += _ => TaskHelper.RunSafely(DojoReplayConfirmation.ConfirmAndLaunch(
-            history, floorNum, $"Replay this fight in the Dojo? (Floor {floorNum})"));
+        __result.Released += _ => NDojoReplaySetupModal.Open(history, floorNum);
     }
 }
