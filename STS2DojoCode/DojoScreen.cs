@@ -31,8 +31,8 @@ namespace STS2Dojo.STS2DojoCode;
 /// The custom Dojo run browser (replaces the first-pass stock-NRunHistory reuse as the Dojo's landing
 /// screen): a left sidebar of live filters (character / ascension / victory / search / sort) over a
 /// scrolling list of the REAL profile's single-player runs, each row showing the run's stats and a
-/// per-act strip of its boss/elite fights as clickable pills that launch that fight directly through
-/// <see cref="DojoReplayLauncher"/>.
+/// per-act strip of its boss/elite fights as clickable pills that open the Replay Setup modal
+/// (<see cref="NDojoReplaySetupModal"/>) for that fight.
 ///
 /// Safety: the run list is fed by <see cref="DojoRunIndex"/>, which reads the real profile's history
 /// directory directly (read-only, absolute paths) and never touches
@@ -803,7 +803,7 @@ public sealed class DojoRunRow
         if (eligible)
         {
             int floor = fight.GlobalFloor;
-            pill.Released += _ => TaskHelper.RunSafely(ConfirmAndLaunch(floor, name));
+            pill.Released += _ => OpenReplaySetup(floor);
         }
         else
         {
@@ -837,7 +837,7 @@ public sealed class DojoRunRow
         return eligible;
     }
 
-    private async Task ConfirmAndLaunch(int floor, string name)
+    private void OpenReplaySetup(int floor)
     {
         RunHistory? history = History();
         if (history == null)
@@ -845,7 +845,7 @@ public sealed class DojoRunRow
             return;
         }
 
-        await DojoReplayConfirmation.ConfirmAndLaunch(history, floor, $"Replay {name}? (Floor {floor})");
+        NDojoReplaySetupModal.Open(history, floor);
     }
 
     private IReadOnlyList<MapPointHistoryEntry>? FlatFloors(RunHistory? history)

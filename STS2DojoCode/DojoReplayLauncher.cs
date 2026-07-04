@@ -40,15 +40,15 @@ public static class DojoReplayLauncher
         return encounterId;
     }
 
-    /// <summary>Convenience overload for callers (e.g. the run browser's floor click) that haven't already
+    /// <summary>Convenience overload for callers (e.g. the Replay Setup modal) that haven't already
     /// resolved an encounter id — resolves it internally and folds any resolution failure into the same
     /// log-and-swallow behavior as a launch failure, since there's no synchronous caller waiting on a result.</summary>
-    public static async Task LaunchReplay(RunHistory run, int globalFloor)
+    public static async Task LaunchReplay(RunHistory run, int globalFloor, DojoStateAdjustments? adjustments = null)
     {
         try
         {
             ModelId encounterId = ResolveEncounterId(run, globalFloor);
-            await LaunchReplay(run, globalFloor, encounterId);
+            await LaunchReplay(run, globalFloor, encounterId, adjustments);
         }
         catch (Exception e)
         {
@@ -56,7 +56,8 @@ public static class DojoReplayLauncher
         }
     }
 
-    public static async Task LaunchReplay(RunHistory run, int globalFloor, ModelId encounterId)
+    public static async Task LaunchReplay(
+        RunHistory run, int globalFloor, ModelId encounterId, DojoStateAdjustments? adjustments = null)
     {
         try
         {
@@ -95,6 +96,12 @@ public static class DojoReplayLauncher
                 {
                     throw new DojoContentEligibilityException(eligibility.MissingContent);
                 }
+
+                // Player-tuned relic/card counter state from the Replay Setup modal. Stamped onto the
+                // freshly-reconstructed serializable DTOs (per-launch instances, safe to mutate) so the
+                // values restore through the game's own save pipeline: FromSerializable below calls
+                // SavedProperties.Fill, the same way a mid-run save reload restores relic counters.
+                adjustments?.ApplyTo(loadout);
 
                 // Replace the auto-populated starting inventory with the reconstructed one. Cards use
                 // silent:true + one InvokeCardAddFinished() flush at the end (CardPile's intended pattern
@@ -170,7 +177,7 @@ public static class DojoReplayLauncher
                 MainFile.Logger.Info(
                     $"[STS2Dojo] Replay launch: '{encounterId.Entry}' character={character.Id.Entry} " +
                     $"deck={loadout.Deck.Count} relics={loadout.Relics.Count} hp={loadout.CurrentHp}/{loadout.MaxHp} " +
-                    $"gold={loadout.Gold} ascension={loadout.Ascension}.");
+                    $"gold={loadout.Gold} ascension={loadout.Ascension} stateAdjustments={adjustments?.Count ?? 0}.");
             });
         }
         catch (DojoContentEligibilityException e)

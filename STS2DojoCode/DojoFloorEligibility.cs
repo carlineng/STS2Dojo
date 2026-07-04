@@ -90,6 +90,28 @@ public static class DojoFloorEligibility
         }
     }
 
+    /// <summary>The same cheap preview reconstruction <see cref="IsEligible"/> runs, but returning the
+    /// loadout itself — the Replay Setup modal uses it to show HP/gold/potions and to enumerate the
+    /// stateful relics/cards before anything is launched. IMPORTANT: the returned loadout's Derived
+    /// deck/relic entries alias the shared <see cref="SnapshotCache"/> DTOs, so callers must treat it as
+    /// READ-ONLY (mutating e.g. a card's Props would poison every later eligibility check for that
+    /// character/ascension). Returns null instead of throwing, mirroring IsEligible's
+    /// refuse-don't-crash behavior.</summary>
+    public static ReconstructedLoadout? TryReconstructPreview(RunHistory history, int globalFloor)
+    {
+        try
+        {
+            StartingSnapshot snapshot = GetStartingSnapshot(history.Players.Single().Character, history.Ascension);
+            return RunReconstructor.Reconstruct(
+                history, globalFloor, snapshot.Deck, snapshot.Relics, snapshot.MaxHp, snapshot.Gold);
+        }
+        catch (Exception e)
+        {
+            MainFile.Logger.Error($"[STS2Dojo] Preview reconstruction failed for floor {globalFloor}: {e.Message}");
+            return null;
+        }
+    }
+
     private static StartingSnapshot GetStartingSnapshot(ModelId characterId, int ascension)
     {
         (ModelId, int) key = (characterId, ascension);
