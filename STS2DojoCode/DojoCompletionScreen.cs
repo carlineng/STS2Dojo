@@ -34,13 +34,16 @@ namespace STS2Dojo.STS2DojoCode;
 /// the reused panel are approximated and may need visual tuning; if the extraction fails for any reason, this
 /// falls back to the plain header+buttons layout that shipped before.
 ///
-/// Derives from <see cref="NTopBarPortrait"/> — an inert game Control subclass — purely so the base chain
-/// contains an sts2 class: mod C# classes deriving directly from a Godot built-in get a broken
-/// script-dispatch bridge (every engine call into them throws, and the engine renders the swallowed
-/// exception as a literal "&lt;null&gt;" native tooltip on hover — CLAUDE.md §5m). It cannot be a plain
-/// non-node class like <see cref="DojoRunRow"/>: <c>NModalContainer.Add</c> hard-casts the node it is given
-/// to <see cref="IScreenContext"/>, so the node itself must implement the interface. The base class's only
-/// member, <c>Initialize(Player)</c>, is never called.
+/// This class is a §5m (CLAUDE.md) landmine: mod C# script classes can get a broken script-dispatch
+/// bridge in the modded game — every engine call into them throws, and the engine renders the swallowed
+/// exception as a literal "&lt;null&gt;" native tooltip on hover. It cannot dodge that the way
+/// <see cref="DojoRunRow"/> does (a plain non-node class owning script-less nodes) because
+/// <c>NModalContainer.Add</c> hard-casts the node it is given to <see cref="IScreenContext"/>, so the node
+/// itself must implement the interface. Three defenses instead: the base class is the inert game class
+/// <see cref="NTopBarPortrait"/> (its only member, <c>Initialize(Player)</c>, is never called — though this
+/// alone was verified in-game NOT to heal the dispatch), the empty <c>_Ready</c> override below, and — the
+/// load-bearing one — the BuildLayout mouse-filter structure that keeps this node out of every native
+/// tooltip walk.
 /// </summary>
 public partial class DojoCompletionScreen : NTopBarPortrait, IScreenContext
 {
@@ -64,6 +67,16 @@ public partial class DojoCompletionScreen : NTopBarPortrait, IScreenContext
     private bool _previousShouldBlockHoverTips;
 
     public Control? DefaultFocusedControl => _tryAgainButton;
+
+    /// <summary>Deliberately-empty lifecycle override: every mod class whose script dispatch works in the
+    /// modded game declares (or inherits from a mod class that declares) a recognized lifecycle override,
+    /// and every §5m-broken one did not — this tests/fixes that discriminator at zero cost. If in-game
+    /// verification shows the §5m exception spam for this class gone, this is what healed it; if the spam
+    /// persists, the BuildLayout mouse-filter structure below still keeps the "&lt;null&gt;" tooltip
+    /// unreachable and this override is harmless.</summary>
+    public override void _Ready()
+    {
+    }
 
     public override void _ExitTree()
     {
@@ -97,11 +110,19 @@ public partial class DojoCompletionScreen : NTopBarPortrait, IScreenContext
     private bool BuildLayout(bool won)
     {
         SetAnchorsPreset(LayoutPreset.FullRect);
-        MouseFilter = MouseFilterEnum.Stop;
+        // This node must be unreachable by the native tooltip walk: if this class's script dispatch is
+        // broken (§5m), Viewport._gui_get_tooltip turns the swallowed exception into a literal "<null>"
+        // tooltip. The walk starts at the hovered control and ascends parents — calling get_tooltip on
+        // every node INCLUDING the MOUSE_FILTER_STOP one that terminates it — so this root is Ignore
+        // (never hovered, never ascended into) and the full-rect center container below is the script-less
+        // Stop control that both swallows modal input (the job this root's Stop filter used to do) and
+        // ends every tooltip walk before it can reach this node.
+        MouseFilter = MouseFilterEnum.Ignore;
         BlockHoverTips();
 
         var center = new CenterContainer();
         center.SetAnchorsPreset(LayoutPreset.FullRect);
+        center.MouseFilter = MouseFilterEnum.Stop;
         AddChild(center);
 
         var stack = new VBoxContainer();
