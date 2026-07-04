@@ -56,6 +56,7 @@ public sealed class DojoRunSummary
     public required ModelId? KilledByEventId { get; init; }
     public required int DeckCount { get; init; }
     public required int RelicCount { get; init; }
+    public required IReadOnlyList<ModelId> RelicIds { get; init; }
     public required IReadOnlyList<DojoActSummary> Acts { get; init; }
 
     /// <summary>Cached live-content eligibility for compact fight pills, keyed by 1-based global floor.
@@ -135,6 +136,7 @@ public static class DojoRunSummarizer
             KilledByEventId = run.KilledByEvent,
             DeckCount = player.Deck.Count(),
             RelicCount = player.Relics.Count(),
+            RelicIds = player.Relics.Select(r => r.Id).Where(id => id != null).Select(id => id!).ToList(),
             Acts = ExtractActs(run),
             RunSource = runSource ?? (() => run)
         };

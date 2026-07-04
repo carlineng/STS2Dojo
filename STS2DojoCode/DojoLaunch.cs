@@ -96,14 +96,28 @@ public static class DojoLaunch
 
         RunManager.Instance.SetUpNewSingleplayer(runState, shouldSave: false);
 
-        // Kills the replays/latest.mcr write leak at the source (every write site in CombatReplayWriter /
-        // CombatManager / RunManager.CleanUp checks IsEnabled first) — no Harmony patch needed for this one.
-        RunManager.Instance.CombatReplayWriter.IsEnabled = false;
-
-        DojoRunRegistry.MarkAsDojo(runState);
-
         try
         {
+            // Boss music fix: RunState.CreateForNewRun always starts CurrentActIndex at 0, and nothing else
+            // ever corrects it here (EnterAct is the only other writer, and it's deliberately skipped above).
+            // NRun._Ready() calls RunMusicController.UpdateMusic() the moment the scene is created below,
+            // which loads the FMOD bank for runState.Act (= Acts[CurrentActIndex]) - if that's still Act 1
+            // while launching an Act 2/3 fight, the boss's specific CustomBgm event
+            // (CombatManager.StartCombatInternal -> PlayCustomMusic) isn't in any loaded bank and silently
+            // fails to play. Elite/normal fights don't show the symptom because their music is just a
+            // generic "Elite"/"Normal" progress parameter on whatever ambient track is already loaded, not a
+            // specific per-boss event. Fix: point CurrentActIndex (and swap in the correct act variant - see
+            // FixActForEncounter) at whichever act actually owns this encounter before the scene exists.
+            // Inside this try block (not between it and SetUpNewSingleplayer above) because it does real
+            // content lookups/RNG work that can throw - see the catch below for why that matters.
+            FixActForEncounter(runState, encounter);
+
+            // Kills the replays/latest.mcr write leak at the source (every write site in CombatReplayWriter /
+            // CombatManager / RunManager.CleanUp checks IsEnabled first) — no Harmony patch needed for this one.
+            RunManager.Instance.CombatReplayWriter.IsEnabled = false;
+
+            DojoRunRegistry.MarkAsDojo(runState);
+
             using (new NetLoadingHandle(RunManager.Instance.NetService))
             {
                 await PreloadManager.LoadRunAssets(runState.Players.Select(p => p.Character));
@@ -121,12 +135,13 @@ public static class DojoLaunch
         }
         catch
         {
-            // mutate(...) (e.g. RunReconstructor content resolution) or the asset/scene setup above can
-            // throw with a live, never-entered RunState already installed via SetUpNewSingleplayer. Left
-            // in place, RunManager.State stays occupied: RunManager.SetUpNewSingleplayer throws
-            // "State is already set." for ANY subsequent run — Dojo or a real player run — until
-            // something else happens to call CleanUp() first. Recover immediately rather than leaving the
-            // session poisoned; the caller's own catch block still logs the original exception.
+            // FixActForEncounter, mutate(...) (e.g. RunReconstructor content resolution), or the asset/scene
+            // setup above can throw with a live, never-entered RunState already installed via
+            // SetUpNewSingleplayer. Left in place, RunManager.State stays occupied:
+            // RunManager.SetUpNewSingleplayer throws "State is already set." for ANY subsequent run — Dojo
+            // or a real player run — until something else happens to call CleanUp() first. Recover
+            // immediately rather than leaving the session poisoned; the caller's own catch block still logs
+            // the original exception.
             RunManager.Instance.CleanUp();
             throw;
         }
@@ -135,5 +150,51 @@ public static class DojoLaunch
     public static async Task EnterEncounter(EncounterModel encounter)
     {
         await RunManager.Instance.EnterRoomDebug(encounter.RoomType, MapPointType.Unassigned, encounter);
+    }
+
+    /// <summary>Finds which registered <see cref="ActModel"/> variant actually owns
+    /// <paramref name="encounter"/> and installs it into the run state at its natural slot index.
+    ///
+    /// Some act slots have more than one live variant - <c>ModelDb.ActsByIndex[1]</c> holds both
+    /// <c>Underdocks</c> and <c>Hive</c> as Act 2 - but <c>RunState.CreateForNewRun</c> (see the caller)
+    /// always seeds <c>Acts</c> from <c>ActModel.GetDefaultList()</c>, i.e. whichever variant per slot has
+    /// <c>IsDefault == true</c>. If the historical fight being replayed used the OTHER variant, that
+    /// variant's <c>AllEncounters</c> never appears in <c>runState.Acts</c> at all, so searching only
+    /// <c>runState.Acts</c> (as an earlier version of this fix did) silently finds no match for exactly
+    /// those fights and leaves <c>CurrentActIndex</c> wrong. Searching every registered variant via
+    /// <c>ModelDb.ActsByIndex</c> and swapping the correct one in via <c>RunState.SetActDebug</c>
+    /// (replaces <c>Acts[CurrentActIndex]</c>, so <c>CurrentActIndex</c> is set first) fixes it regardless
+    /// of which variant the original run rolled. <c>AllEncounters</c> is a deterministic, RNG-free content
+    /// list, so it's safe to query before the act has generated any rooms.
+    ///
+    /// <c>candidate.ToMutable()</c> resets the clone's <c>_rooms</c> to an empty <c>RoomSet()</c>
+    /// (<c>ActModel.DeepCloneFields</c>) - every OTHER act already had <c>RunManager.GenerateRooms()</c>
+    /// run over it inside <c>SetUpNewSingleplayer</c> (before this method runs), which is what populates
+    /// <c>_rooms.Boss</c>/<c>Ancient</c>/etc.; this fresh clone never gets that call. Leaving it empty
+    /// previously made the launch throw the first time anything downstream touched a
+    /// <c>_rooms</c>-derived property (e.g. <c>BossEncounter</c>) on this act - caught by the try/catch in
+    /// <see cref="LaunchInternal"/>, so the failure was silent from the player's perspective (no fight, no
+    /// error, just back to the Dojo screen). Calling <c>GenerateRooms</c> here (same three args
+    /// <c>RunManager.GenerateRooms()</c> passes) mirrors what already happened to every other act and
+    /// leaves this one just as populated; its actual random picks don't matter since the Dojo forces a
+    /// specific, already-resolved <paramref name="encounter"/> into combat regardless of what the act
+    /// itself would have rolled.</summary>
+    private static void FixActForEncounter(RunState runState, EncounterModel encounter)
+    {
+        IReadOnlyList<IReadOnlyList<ActModel>> actsByIndex = ModelDb.ActsByIndex;
+        for (int i = 0; i < actsByIndex.Count; i++)
+        {
+            foreach (ActModel candidate in actsByIndex[i])
+            {
+                if (candidate.AllEncounters.Any(e => e.Id == encounter.Id))
+                {
+                    ActModel mutableAct = candidate.ToMutable();
+                    mutableAct.GenerateRooms(runState.Rng.UpFront, runState.UnlockState, runState.Players.Count > 1);
+                    runState.CurrentActIndex = i;
+                    runState.SetActDebug(mutableAct);
+                    return;
+                }
+            }
+        }
     }
 }

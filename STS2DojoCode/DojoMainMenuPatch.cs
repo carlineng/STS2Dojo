@@ -49,7 +49,7 @@ public static class DojoMainMenuPatch
         MegaLabel? dojoLabel = dojoButton.GetChild<MegaLabel>(0);
         if (dojoLabel != null)
         {
-            dojoLabel.Text = "Dojo";
+            dojoLabel.Text = "Practice Dojo";
         }
 
         container.AddChildSafely(dojoButton);

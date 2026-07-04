@@ -202,6 +202,10 @@ internal static class DojoRunIndexCacheRunner
             "killed by event");
         Assert.Equal(expected.DeckCount, actual.DeckCount, "deck count");
         Assert.Equal(expected.RelicCount, actual.RelicCount, "relic count");
+        Assert.SequenceEqual(
+            expected.RelicIds.Select(id => id.ToString()).ToArray(),
+            actual.RelicIds.Select(id => id.ToString()).ToArray(),
+            "relic ids");
         Assert.Equal(expected.Acts.Count, actual.Acts.Count, "act count");
 
         for (int i = 0; i < expected.Acts.Count; i++)
