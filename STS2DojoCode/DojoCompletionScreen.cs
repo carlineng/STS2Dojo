@@ -14,6 +14,7 @@ using MegaCrit.Sts2.Core.Nodes.HoverTips;
 using MegaCrit.Sts2.Core.Nodes.Multiplayer;
 using MegaCrit.Sts2.Core.Nodes.Screens;
 using MegaCrit.Sts2.Core.Nodes.Screens.ScreenContext;
+using MegaCrit.sts2.Core.Nodes.TopBar;
 
 namespace STS2Dojo.STS2DojoCode;
 
@@ -32,8 +33,21 @@ namespace STS2Dojo.STS2DojoCode;
 /// this mod has no access to the actual .tscn layout (only decompiled C#), so exact spacing/margins inside
 /// the reused panel are approximated and may need visual tuning; if the extraction fails for any reason, this
 /// falls back to the plain header+buttons layout that shipped before.
+///
+/// This class is a §5m (CLAUDE.md) landmine: its script-dispatch bridge is broken in the modded game —
+/// every engine call into it throws (its _Ready/_ExitTree overrides never actually run), and the engine
+/// renders the swallowed exception as a literal "&lt;null&gt;" native tooltip on hover. The exact
+/// discriminator is unknown (game-class base and lifecycle-override theories were both falsified in-game;
+/// see §5m). It cannot dodge the problem the way <see cref="DojoRunRow"/> does (a plain non-node class
+/// owning script-less nodes) because <c>NModalContainer.Add</c> hard-casts the node it is given to
+/// <see cref="IScreenContext"/>, so the node itself must implement the interface. The load-bearing defense
+/// is the BuildLayout mouse-filter structure that keeps this node out of every native tooltip walk —
+/// verified in-game 2026-07-03. The <see cref="NTopBarPortrait"/> base (inert; its only member,
+/// <c>Initialize(Player)</c>, is never called) is kept but known not to matter. The residual §5m exception
+/// spam from lifecycle/layout dispatch into this class (~60 log lines per completion-screen visit) is
+/// cosmetic.
 /// </summary>
-public partial class DojoCompletionScreen : Control, IScreenContext
+public partial class DojoCompletionScreen : NTopBarPortrait, IScreenContext
 {
     private const float PanelWidth = 720f;
     private const float PanelHeight = 540f;
@@ -49,30 +63,12 @@ public partial class DojoCompletionScreen : Control, IScreenContext
     private DojoCompletionEventOptionButton _tryAgainButton = null!;
     private DojoCompletionEventOptionButton _returnToDojoButton = null!;
     private DojoCompletionEventOptionButton _returnToMainMenuButton = null!;
-    private double _tooltipCleanupElapsed;
     private CanvasItem? _hoverTipsContainerCanvasItem;
     private bool _blockedHoverTips;
     private bool _previousHoverTipsContainerVisible;
     private bool _previousShouldBlockHoverTips;
 
     public Control? DefaultFocusedControl => _tryAgainButton;
-
-    public override string _GetTooltip(Vector2 atPosition) => string.Empty;
-
-    public override Control _MakeCustomTooltip(string forText) => null!;
-
-    public override void _Process(double delta)
-    {
-        _tooltipCleanupElapsed += delta;
-        if (_tooltipCleanupElapsed < 0.1d)
-        {
-            return;
-        }
-
-        _tooltipCleanupElapsed = 0d;
-        KeepHoverTipsBlocked();
-        ClearCompletionScreenHoverState();
-    }
 
     public override void _ExitTree()
     {
@@ -106,12 +102,19 @@ public partial class DojoCompletionScreen : Control, IScreenContext
     private bool BuildLayout(bool won)
     {
         SetAnchorsPreset(LayoutPreset.FullRect);
-        MouseFilter = MouseFilterEnum.Stop;
-        SetProcess(true);
+        // This node must be unreachable by the native tooltip walk: if this class's script dispatch is
+        // broken (§5m), Viewport._gui_get_tooltip turns the swallowed exception into a literal "<null>"
+        // tooltip. The walk starts at the hovered control and ascends parents — calling get_tooltip on
+        // every node INCLUDING the MOUSE_FILTER_STOP one that terminates it — so this root is Ignore
+        // (never hovered, never ascended into) and the full-rect center container below is the script-less
+        // Stop control that both swallows modal input (the job this root's Stop filter used to do) and
+        // ends every tooltip walk before it can reach this node.
+        MouseFilter = MouseFilterEnum.Ignore;
         BlockHoverTips();
 
         var center = new CenterContainer();
         center.SetAnchorsPreset(LayoutPreset.FullRect);
+        center.MouseFilter = MouseFilterEnum.Stop;
         AddChild(center);
 
         var stack = new VBoxContainer();
@@ -122,12 +125,7 @@ public partial class DojoCompletionScreen : Control, IScreenContext
             ?? BuildPlainChrome(won, stack);
 
         bool built = BuildButtons(buttonParent);
-        if (built)
-        {
-            ClearTooltipsRecursively(this);
-            Callable.From(ClearCompletionScreenHoverState).CallDeferred();
-        }
-        else
+        if (!built)
         {
             RestoreHoverTips();
         }
@@ -173,7 +171,6 @@ public partial class DojoCompletionScreen : Control, IScreenContext
             panel.SizeFlagsHorizontal = SizeFlags.ShrinkCenter;
             panel.SizeFlagsVertical = SizeFlags.ShrinkCenter;
             panel.PivotOffset = new Vector2(PanelWidth / 2f, PanelHeight / 2f);
-            ClearTooltipsRecursively(panel);
             panel.AddChild(headerLabel);
 
             var layout = new MarginContainer();
@@ -299,7 +296,6 @@ public partial class DojoCompletionScreen : Control, IScreenContext
 
         ConfigureButtonChrome(button);
         button.SetText(text);
-        ClearTooltipsRecursively(button);
         return button;
     }
 
@@ -327,18 +323,6 @@ public partial class DojoCompletionScreen : Control, IScreenContext
         label.OffsetRight = -ButtonTextHorizontalPadding;
         label.OffsetBottom = -3f;
         label.MouseFilter = MouseFilterEnum.Ignore;
-    }
-
-    private static void ClearTooltipsRecursively(Node node)
-    {
-        if (node is Control control)
-        {
-            control.TooltipText = string.Empty;
-        }
-        foreach (Node child in node.GetChildren())
-        {
-            ClearTooltipsRecursively(child);
-        }
     }
 
     private static void RemoveAllChildren(Node node)
@@ -401,13 +385,6 @@ public partial class DojoCompletionScreen : Control, IScreenContext
         control.OffsetBottom = height;
     }
 
-    private void ClearCompletionScreenHoverState()
-    {
-        ClearTooltipsRecursively(this);
-        ClearGameHoverTips();
-        ClearNativeNullTooltips();
-    }
-
     private void BlockHoverTips()
     {
         if (_blockedHoverTips)
@@ -427,17 +404,6 @@ public partial class DojoCompletionScreen : Control, IScreenContext
 
         _blockedHoverTips = true;
         ClearGameHoverTips();
-    }
-
-    private void KeepHoverTipsBlocked()
-    {
-        if (!_blockedHoverTips)
-        {
-            return;
-        }
-
-        NHoverTipSet.shouldBlockHoverTips = true;
-        _hoverTipsContainerCanvasItem?.Hide();
     }
 
     private void RestoreHoverTips()
@@ -488,68 +454,6 @@ public partial class DojoCompletionScreen : Control, IScreenContext
         {
             child.QueueFreeSafely();
         }
-    }
-
-    private static void ClearNativeNullTooltips()
-    {
-        Window? root = NGame.Instance?.GetTree()?.Root;
-        if (root == null)
-        {
-            return;
-        }
-
-        ClearNativeNullTooltips(root);
-    }
-
-    private static void ClearNativeNullTooltips(Node node)
-    {
-        foreach (Node child in node.GetChildren())
-        {
-            ClearNativeNullTooltips(child);
-        }
-
-        if (!IsNativeNullTooltipLabel(node))
-        {
-            return;
-        }
-
-        TryFindNativeTooltipContainer(node)?.QueueFreeSafely();
-    }
-
-    private static bool IsNativeNullTooltipLabel(Node node)
-    {
-        return node is Label label && IsNullTooltipText(label.Text)
-            || node is RichTextLabel richTextLabel && IsNullTooltipText(richTextLabel.Text);
-    }
-
-    private static bool IsNullTooltipText(string text)
-    {
-        string trimmed = text.Trim();
-        return trimmed.Equals("null", StringComparison.OrdinalIgnoreCase)
-            || trimmed.Equals("<null>", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static Node? TryFindNativeTooltipContainer(Node node)
-    {
-        Node? current = node;
-        for (int i = 0; i < 5 && current != null; i++)
-        {
-            if (IsTooltipLikeContainer(current))
-            {
-                return current;
-            }
-            current = current.GetParent();
-        }
-        return null;
-    }
-
-    private static bool IsTooltipLikeContainer(Node node)
-    {
-        string nodeName = node.Name.ToString();
-        string typeName = node.GetType().Name;
-        return node is PopupPanel
-            || nodeName.Contains("Tooltip", StringComparison.OrdinalIgnoreCase)
-            || typeName.Contains("Tooltip", StringComparison.OrdinalIgnoreCase);
     }
 
     private static async Task OnTryAgain()
@@ -604,10 +508,6 @@ public partial class DojoCompletionEventOptionButton : NButton
     private bool _pressed;
 
     protected override string[] Hotkeys => Array.Empty<string>();
-
-    public override string _GetTooltip(Vector2 atPosition) => string.Empty;
-
-    public override Control _MakeCustomTooltip(string forText) => null!;
 
     public override void _Ready()
     {

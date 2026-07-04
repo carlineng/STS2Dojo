@@ -23,6 +23,7 @@ using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Runs.History;
 using STS2Dojo.STS2DojoCode.Reconstruction;
+using SizeFlags = Godot.Control.SizeFlags;
 
 namespace STS2Dojo.STS2DojoCode;
 
@@ -340,7 +341,7 @@ public partial class NDojoScreen : NSubmenu
     private void AddCharacterFilterChip(
         Control parent, List<DojoChip> group, ModelId characterId, bool selected, Action apply)
     {
-        DojoChip chip = DojoUi.MakeCharacterChip(characterId, DojoDisplayNames.Character(characterId));
+        DojoChip chip = DojoUi.MakeCharacterChip(characterId);
         AddFilterChip(parent, group, chip, selected, apply);
     }
 
@@ -515,7 +516,8 @@ public partial class NDojoScreen : NSubmenu
         int end = Math.Min(_rowsBuilt + RowBatchSize, _visibleRuns.Count);
         for (int i = _rowsBuilt; i < end; i++)
         {
-            _rowContainer.AddChild(new DojoRunRow().Init(_visibleRuns[i]));
+            DojoRunRow row = new DojoRunRow().Init(_visibleRuns[i]);
+            _rowContainer.AddChild(row.Root);
         }
         _rowsBuilt = end;
     }
@@ -543,8 +545,15 @@ public partial class NDojoScreen : NSubmenu
 /// (<c>NMapPointHistoryEntry.OnFocus</c> throws without it) and is called right after the strip enters the
 /// tree: on the main thread <c>AddChild</c> runs the icons' <c>_Ready</c> synchronously, so their
 /// %QuestIcon/texture references exist by then (this mirrors <c>NRunHistory.DisplayRun</c> → <c>SelectPlayer</c>).
+///
+/// NOT a Node subclass: as a node this class had a broken script-dispatch bridge in the modded game —
+/// every engine call into it threw, and the engine renders the swallowed exception as a literal
+/// "&lt;null&gt;" native tooltip on hover (CLAUDE.md §5m; the exact discriminator for which mod script
+/// classes break is unknown — two theories were falsified in-game). So this is a plain class owning a
+/// script-less <see cref="PanelContainer"/> (<see cref="Root"/>) — no script instance, nothing to throw;
+/// the toggle/pill closures keep the instance alive for exactly as long as its root is in the tree.
 /// </summary>
-public partial class DojoRunRow : PanelContainer
+public sealed class DojoRunRow
 {
     private const float ActLabelWidth = 108f;
 
@@ -568,15 +577,17 @@ public partial class DojoRunRow : PanelContainer
     private bool _expanded;
     private IReadOnlyList<MapPointHistoryEntry>? _flatFloors;
 
-    /// <summary>Builds the row for <paramref name="run"/> (collapsed). A method rather than a constructor
-    /// argument so the class keeps the parameterless constructor Godot's C# type registration expects, the
-    /// same pattern <see cref="DojoChip"/>/<see cref="DojoFightPill"/> use.</summary>
+    /// <summary>The row's actual node — a script-less PanelContainer this class builds into. This is what
+    /// NDojoScreen adds to the run list; freeing it (list rebuild) releases the whole row.</summary>
+    public PanelContainer Root { get; } = new();
+
+    /// <summary>Builds the row for <paramref name="run"/> (collapsed).</summary>
     public DojoRunRow Init(DojoRunSummary run)
     {
         _run = run;
-        AddThemeStyleboxOverride("panel",
+        Root.AddThemeStyleboxOverride("panel",
             NDojoScreen.MakePanelStyle(NDojoScreen.RowColor, NDojoScreen.RowBorderColor, 10));
-        SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        Root.SizeFlagsHorizontal = SizeFlags.ExpandFill;
 
         _bodyHost = new MarginContainer();
         _bodyHost.AddThemeConstantOverride("margin_left", 20);
@@ -584,7 +595,7 @@ public partial class DojoRunRow : PanelContainer
         _bodyHost.AddThemeConstantOverride("margin_top", 14);
         _bodyHost.AddThemeConstantOverride("margin_bottom", 14);
         _bodyHost.SizeFlagsHorizontal = SizeFlags.ExpandFill;
-        AddChild(_bodyHost);
+        Root.AddChild(_bodyHost);
 
         RenderCollapsed();
         return this;
@@ -1114,12 +1125,11 @@ internal static class DojoUi
         return chip;
     }
 
-    internal static DojoChip MakeCharacterChip(ModelId characterId, string tooltip)
+    internal static DojoChip MakeCharacterChip(ModelId characterId)
     {
         var chip = new DojoChip();
         Control icon = MakeCharacterIcon(characterId, 32f);
         chip.Configure(string.Empty, compact: true, icon);
-        chip.TooltipText = tooltip;
         return chip;
     }
 
@@ -1355,7 +1365,6 @@ public partial class DojoFightPill : NButton
         if (!eligible)
         {
             Modulate = StsColors.disabledTopBarButton;
-            TooltipText = string.Empty;
         }
     }
 
