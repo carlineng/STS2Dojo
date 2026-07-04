@@ -17,9 +17,11 @@ internal static class SeedSharingRunner
         RunGroup("structural validation", StructuralValidation);
         RunGroup("compatibility gate", CompatibilityGate);
         RunGroup("launch options mapping", LaunchOptionsMapping);
+        RunGroup("library filenames", LibraryFileNames);
+        RunGroup("library save and list round-trip", LibrarySaveListRoundTrip);
 
         Console.WriteLine();
-        Console.WriteLine("8 seed-sharing test groups passed.");
+        Console.WriteLine("10 seed-sharing test groups passed.");
     }
 
     private static void RunGroup(string name, Action test)
@@ -238,6 +240,83 @@ internal static class SeedSharingRunner
         Assert.True(
             defaults.SeedOverride == null && defaults.RunRngCounters == null && defaults.PlayerRngCounters == null,
             "default options mean fresh-RNG normal behavior");
+    }
+
+    private static void LibraryFileNames()
+    {
+        DateTime created = new(2026, 7, 4, 9, 8, 7, DateTimeKind.Utc);
+
+        Assert.Equal("created-20260704-090807-decimillipede-practice.dojofight.json",
+            DojoFightLibrary.BuildFileName(SavedFightOrigin.Created, created, "Decimillipede practice", _ => false),
+            "basic filename");
+        Assert.Equal("imported-20260704-090807-fight.dojofight.json",
+            DojoFightLibrary.BuildFileName(SavedFightOrigin.Imported, created, "!!! ***", _ => false),
+            "unsluggable title falls back");
+        Assert.Equal("created-20260704-090807-a-b.dojofight.json",
+            DojoFightLibrary.BuildFileName(SavedFightOrigin.Created, created, "  A -- b!  ", _ => false),
+            "slug collapses separators");
+
+        HashSet<string> taken = ["created-20260704-090807-dupe.dojofight.json"];
+        string second = DojoFightLibrary.BuildFileName(SavedFightOrigin.Created, created, "dupe", taken.Contains);
+        Assert.Equal("created-20260704-090807-dupe-2.dojofight.json", second, "collision suffix");
+        taken.Add(second);
+        Assert.Equal("created-20260704-090807-dupe-3.dojofight.json",
+            DojoFightLibrary.BuildFileName(SavedFightOrigin.Created, created, "dupe", taken.Contains),
+            "second collision suffix");
+
+        string longTitle = new('x', 100);
+        string longName = DojoFightLibrary.BuildFileName(SavedFightOrigin.Created, created, longTitle, _ => false);
+        Assert.True(longName.Contains(new string('x', 40)) && !longName.Contains(new string('x', 41)),
+            "slug capped at 40 chars");
+
+        Assert.Equal(SavedFightOrigin.Created,
+            DojoFightLibrary.TryClassify("created-20260704-090807-x.dojofight.json"), "classify created");
+        Assert.Equal(SavedFightOrigin.Imported,
+            DojoFightLibrary.TryClassify("imported-20260704-090807-x.dojofight.json"), "classify imported");
+        Assert.Equal(null, DojoFightLibrary.TryClassify("notes.txt"), "unrelated file ignored");
+        Assert.Equal(null, DojoFightLibrary.TryClassify("created-x.dojofight.json.tmp"), "tmp file ignored");
+        Assert.Equal(null, DojoFightLibrary.TryClassify("other-20260704-090807-x.dojofight.json"),
+            "unknown prefix ignored");
+    }
+
+    private static void LibrarySaveListRoundTrip()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "sts2dojo-tests", Path.GetRandomFileName());
+        try
+        {
+            Assert.Equal(0, DojoFightLibrary.List(directory).Entries.Count, "missing directory lists empty");
+
+            SharedFightPayload older = SamplePayload();
+            older.Title = "Older fight";
+            older.CreatedUtc = SampleCreatedUtc.AddDays(-1);
+            SharedFightPayload newer = SamplePayload();
+            newer.Title = "Newer fight";
+
+            string olderPath = DojoFightLibrary.Save(directory, older, SavedFightOrigin.Created);
+            string newerPath = DojoFightLibrary.Save(directory, newer, SavedFightOrigin.Imported);
+            Assert.True(File.Exists(olderPath) && File.Exists(newerPath), "saved files exist");
+            Assert.True(!Directory.GetFiles(directory).Any(f => f.EndsWith(".tmp")), "no temp files left behind");
+
+            // Noise the listing must tolerate: an unrelated file and a damaged entry.
+            File.WriteAllText(Path.Combine(directory, "notes.txt"), "not a fight");
+            File.WriteAllText(
+                Path.Combine(directory, "imported-20260101-000000-broken.dojofight.json"), "{ truncated");
+
+            SavedFightListing listing = DojoFightLibrary.List(directory);
+            Assert.Equal(2, listing.Entries.Count, "both entries listed");
+            Assert.Equal(1, listing.UnreadableFiles, "damaged entry counted, not thrown");
+            Assert.Equal("Newer fight", listing.Entries[0].Payload.Title, "newest first");
+            Assert.Equal(SavedFightOrigin.Imported, listing.Entries[0].Origin, "origin from filename");
+            Assert.Equal(SavedFightOrigin.Created, listing.Entries[1].Origin, "created origin round-trips");
+            AssertPayloadsEquivalent(older, listing.Entries[1].Payload, "library round-trip");
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
     }
 
     private static void AssertFormatError(Action action, string label)
