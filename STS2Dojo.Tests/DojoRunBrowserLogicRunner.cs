@@ -20,7 +20,8 @@ internal static class DojoRunBrowserLogicRunner
         ["ENCOUNTER.QUEEN_BOSS"] = "The Queen",
         ["ENCOUNTER.AEONGLASS_BOSS"] = "Aeon Glass",
         ["ENCOUNTER.TERROR_EEL_ELITE"] = "Terror Eel",
-        ["ENCOUNTER.DECIMILLIPEDE_ELITE"] = "Decimillipede"
+        ["ENCOUNTER.DECIMILLIPEDE_ELITE"] = "Decimillipede",
+        ["RELIC.GREMLIN_HORN"] = "Gremlin Horn"
     };
 
     private static string ResolveName(ModelId id) =>
@@ -253,6 +254,11 @@ internal static class DojoRunBrowserLogicRunner
             FileNames(Apply(runs, new DojoRunFilter(SearchText: "terror eel"))), "elite display-name search");
         Assert.SequenceEqual(["1782696823.run"],
             FileNames(Apply(runs, new DojoRunFilter(SearchText: "AEONGLASS_BOSS"))), "raw encounter-id search");
+        // Only 1779595721.run's ending relics include Gremlin Horn.
+        Assert.SequenceEqual(["1779595721.run"],
+            FileNames(Apply(runs, new DojoRunFilter(SearchText: "gremlin"))), "relic display-name search");
+        Assert.SequenceEqual(["1779595721.run"],
+            FileNames(Apply(runs, new DojoRunFilter(SearchText: "RELIC.GREMLIN_HORN"))), "raw relic-id search");
         Assert.Equal(0, Apply(runs, new DojoRunFilter(SearchText: "zzz-no-match")).Count, "no-match search");
         Assert.Equal(3, Apply(runs, new DojoRunFilter(SearchText: "   ")).Count, "blank search matches all");
     }

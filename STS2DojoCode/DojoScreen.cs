@@ -206,7 +206,7 @@ public partial class NDojoScreen : NSubmenu
         stack.AddChild(MakeSpacer(10));
 
         _searchBox = new LineEdit();
-        _searchBox.PlaceholderText = "Search character, boss, seed...";
+        _searchBox.PlaceholderText = "Search character, boss, relic, seed...";
         _searchBox.ClearButtonEnabled = true;
         _searchBox.CustomMinimumSize = new Vector2(0, 46);
         _searchBox.AddThemeStyleboxOverride("normal", MakePanelStyle(new Color("10131A"), RowBorderColor, 8));
@@ -528,8 +528,9 @@ public partial class NDojoScreen : NSubmenu
 /// floor map. This replaces the old "View All Combats" drill-in to the stock <c>NRunHistory</c> screen —
 /// and with it the Dojo's last <c>UserDataPathProvider.IsRunningModded</c> flip (CLAUDE.md §5i/§6).
 ///
-/// COLLAPSED: character badge, identity header, the per-act boss/elite highlight-pill strip, the death
-/// quote, and a right-hand meta column whose last control is the expand toggle.
+/// COLLAPSED: character badge, identity header, the run's ending relic bar, one row per act (act 1 on top)
+/// of boss/elite highlight pills running left-to-right in floor order, the death quote, and a right-hand
+/// meta column whose last control is the expand toggle.
 ///
 /// EXPANDED: a full-width identity header (with the seed, since the meta column is gone) plus one
 /// horizontal strip of stock <see cref="NMapPointHistoryEntry"/> icons per act — the same widget the stock
@@ -672,6 +673,11 @@ public sealed class DojoRunRow
 
         if (_run.Acts.Count > 0)
         {
+            Control? relicBar = BuildRelicBar();
+            if (relicBar != null)
+            {
+                center.AddChild(relicBar);
+            }
             center.AddChild(BuildActStrip());
             Control? quote = BuildDeathQuote();
             if (quote != null)
@@ -754,39 +760,81 @@ public sealed class DojoRunRow
         return header;
     }
 
+    private const float RelicIconSize = 30f;
+
+    /// <summary>The run's ending relic bar, shown above the fight selections. Icons only (no counters/hover
+    /// state, unlike the Replay Setup modal's stateful-relic rows) - this is a quick "what was this run's
+    /// loadout" glance, not an editor. Wraps via HFlowContainer since a long run can end with 15+ relics.</summary>
+    private Control? BuildRelicBar()
+    {
+        if (_run.RelicIds.Count == 0)
+        {
+            return null;
+        }
+
+        var bar = new HFlowContainer();
+        bar.AddThemeConstantOverride("h_separation", 6);
+        bar.AddThemeConstantOverride("v_separation", 6);
+
+        foreach (ModelId relicId in _run.RelicIds)
+        {
+            Texture2D? icon = DojoUi.ResolveRelicIconTexture(relicId);
+            if (icon == null)
+            {
+                continue;
+            }
+
+            var rect = new TextureRect();
+            rect.Texture = icon;
+            rect.CustomMinimumSize = new Vector2(RelicIconSize, RelicIconSize);
+            rect.ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize;
+            rect.StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered;
+            rect.MouseFilter = Control.MouseFilterEnum.Ignore;
+            bar.AddChild(rect);
+        }
+
+        return bar;
+    }
+
+    /// <summary>One row per act (row 1 = act 1, row 2 = act 2, row 3 = act 3), each act's fights running
+    /// left-to-right in floor order — mirrors the expanded floor map's per-act row layout (BuildFloorMap)
+    /// instead of the old per-act columns/vertical-fights layout.</summary>
     private Control BuildActStrip()
     {
-        var strip = new HBoxContainer();
-        strip.AddThemeConstantOverride("separation", 26);
+        var strip = new VBoxContainer();
+        strip.AddThemeConstantOverride("separation", 8);
         strip.SizeFlagsHorizontal = SizeFlags.ExpandFill;
 
         foreach (DojoActSummary act in _run.Acts)
         {
-            var actBox = new VBoxContainer();
-            actBox.AddThemeConstantOverride("separation", 5);
+            var actRow = new HBoxContainer();
+            actRow.AddThemeConstantOverride("separation", 12);
+            actRow.SizeFlagsHorizontal = SizeFlags.ExpandFill;
 
             string actName = act.ActId != null
                 ? DojoDisplayNames.Act(act.ActId).ToUpperInvariant()
                 : $"ACT {act.ActIndex + 1}";
-            actBox.AddChild(DojoUi.MakeLabel(actName, 13, NDojoScreen.FaintText));
+            Label actLabel = DojoUi.MakeLabel(actName, 13, NDojoScreen.FaintText);
+            actLabel.CustomMinimumSize = new Vector2(ActLabelWidth, 0);
+            actRow.AddChild(actLabel);
 
-            var fightColumn = new VBoxContainer();
-            fightColumn.AddThemeConstantOverride("separation", 5);
-            actBox.AddChild(fightColumn);
+            var fightRow = new HBoxContainer();
+            fightRow.AddThemeConstantOverride("separation", 8);
+            actRow.AddChild(fightRow);
 
             var fights = act.DisplayFights
                 .OrderBy(fight => fight.GlobalFloor)
                 .ToList();
             if (fights.Count == 0)
             {
-                fightColumn.AddChild(DojoUi.MakeLabel("Boss not reached", 14, NDojoScreen.FaintText));
+                fightRow.AddChild(DojoUi.MakeLabel("Boss not reached", 14, NDojoScreen.FaintText));
             }
             foreach (DojoFightSummary fight in fights)
             {
-                fightColumn.AddChild(BuildFightPill(fight));
+                fightRow.AddChild(BuildFightPill(fight));
             }
 
-            strip.AddChild(actBox);
+            strip.AddChild(actRow);
         }
 
         return strip;
@@ -1184,6 +1232,23 @@ internal static class DojoUi
         catch (Exception e)
         {
             MainFile.Logger.Info("[STS2Dojo] Could not resolve character icon for " + characterId + ": " + e.Message);
+            return null;
+        }
+    }
+
+    /// <summary>Same resolve-or-null pattern as <see cref="ResolveCharacterIconTexture"/>, for the run
+    /// row's relic bar. Missing/unresolvable relics (removed/renamed content) are just skipped there rather
+    /// than shown with a fallback glyph - unlike a character avatar, a relic bar is a quick glance, not the
+    /// row's primary identity.</summary>
+    internal static Texture2D? ResolveRelicIconTexture(ModelId relicId)
+    {
+        try
+        {
+            return ModelDb.GetByIdOrNull<RelicModel>(relicId)?.Icon;
+        }
+        catch (Exception e)
+        {
+            MainFile.Logger.Info("[STS2Dojo] Could not resolve relic icon for " + relicId + ": " + e.Message);
             return null;
         }
     }
