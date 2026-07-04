@@ -554,7 +554,8 @@ This maps 1:1 onto the §5 recoverability table — no hidden fields combat dema
 **v1 scope, decided:**
 - **Pre-combat capture only.** Freeze state right before the fight begins; no mid-combat freeze-frame (pausing partway through a fight and exporting the live board — piles, monster HP/intents/buffs, orbs, turn state). The base game's own save format has zero support for that (`Saves/SerializableRun.cs`, `Saves/Runs/SerializableRoom.cs` carry no combat-internal state at all — the game can only checkpoint between rooms), so it would mean inventing a full combat-state serializer from scratch. Deferred indefinitely, not just to a later phase.
 - Single-fight only, same as the rest of Dojo (§2) — never a multi-floor/gauntlet export.
-- Refuse import on any game-build/mod-version mismatch (see Compatibility gate below) rather than best-effort.
+- Refuse import on game-build or payload-schema mismatch (see Compatibility gate below, **revised 2026-07-04**) rather than best-effort.
+- **Try Again on a seed-captured fight replays the SAME seed+counters (decided 2026-07-04):** for an imported fight (or a fight exported then retried from the Completion screen), every attempt restores the captured RNG snapshot — identical opening hand/intents each try, the "repeatable" in the feature name. Normal uncaptured Dojo fights keep today's fresh-RNG-per-attempt behavior (§3) unchanged.
 
 ### 12a. Capture mechanism — one shared routine, three entry points
 
@@ -565,6 +566,17 @@ The exact snapshot point already exists in the current pipeline: inside `DojoRep
 At this point in `LaunchInternal` (`DojoLaunch.cs:68-148`), `FixActForEncounter` (line 113, before `mutate` runs) has only touched the `UpFront` stream (map/room generation) — every combat-relevant stream (`Shuffle`, `CombatCardGeneration`, `CombatCardSelection`, `CombatEnergyCosts`, `CombatTargets`, `MonsterAi`, `CombatOrbGeneration`, `CombatPotionGeneration`, `Niche`) is still at its fresh starting counter. So capturing `runState.Rng.ToSerializable()` + each player's `PlayerRng.ToSerializable()` right there, alongside the loadout, is sufficient to reproduce the exact draw order and everything downstream — nothing about card order needs to be (or can cleanly be) stored explicitly; the same deterministic shuffle regenerates it from the counter on import.
 
 **Confirmed safe:** the Replay Setup modal's Random relic/card preset uses `Random.Shared.Next(...)` (`DojoReplaySetupModal.cs:658`), not any run/player RNG stream — fiddling with Zero/Random/Primed presets before exporting never perturbs the streams being captured. The exported relic/card `Props` already bake in whatever value a preset landed on; nothing needs to be re-rolled on import.
+
+**Determinism gaps found by pre-implementation code review (2026-07-04, verified against `decompiled/`) — the payload alone is NOT sufficient; both must be handled:**
+
+1. **Encounter monster composition is outside `RunRngSet`/`PlayerRngSet`.** `DojoLaunch.cs:85` calls `encounter.DebugRandomizeRng()`, which seeds a **private RNG on the `EncounterModel` from wall-clock time** (`EncounterModel.cs:288-292`); that RNG drives `GenerateMonsters()` — which variants/lineup a randomized encounter rolls. Two importers of the same payload would get different enemy compositions. **Fix (decided):** capture-enabled launches skip `DebugRandomizeRng()` — with `_rng` left null, `GenerateMonstersWithSlots` derives its seed deterministically from the run seed (`EncounterModel.cs:211`: `runState.Rng.Seed + TotalFloor + hash(encounterId)`), so composition reproduces for free with no new payload field. Everything else combat-relevant was traced onto the run streams and is covered by the seed: deck shuffle (`CombatManager.cs:241`, `Shuffle`), monster HP rolls (`CombatState.cs:138`, `Niche`), monster AI (`MonsterAi`), each monster's private `Rng` (`CombatState.cs:142`, derived from `RunState.Rng.Seed`), and `PlayerRngSet` itself (`Player.cs:240`, derived from the run string seed — the payload's player-RNG section is redundant-but-harmless robustness).
+2. **Unlock-state-dependent generation pools break cross-user identity.** In-combat random card generation filters its candidate pool by the owner's unlock progress — e.g. `Discovery.cs:27`: `CardPool.GetUnlockedCards(base.Owner.UnlockState, ...)`. Same seed, same counter, different unlocks → different generated card. `DojoLaunch` currently builds runs from `SaveManager.Instance.GenerateUnlockStateFromProgress()` (line 88), which differs per user. **Fix (decided 2026-07-04): capture and import launches both use a fully-unlocked `UnlockState`,** making pools identical for everyone; the throwaway run never saves, so nothing leaks to real progress. Accepted trade-off: a shared fight can generate cards the importer hasn't unlocked yet (mild spoiler). Regular non-captured Dojo launches keep using real progress, unchanged.
+
+**Import-path constraint (state it now so the implementation doesn't fight it):** `RunRngSet.LoadFromSerializable`/`PlayerRngSet.LoadFromSerializable` both **throw on seed mismatch**, and `RunState.Rng` is `{ get; init; }` — so the import launch must construct the throwaway run with the payload's seed string from the start. `DojoLaunch.LaunchInternal` hardcodes `SeedHelper.GetRandomSeed()` (line 87) and needs a seed-override parameter alongside the `PrepareOnly` mode noted above. After construction, applying the payload's counters via `LoadFromSerializable` reconciles any residual drift (e.g. starting-relic hooks that consumed a stream pre-capture).
+
+**Two more implementation notes from the same review:**
+- **Snapshot retention must live in `LaunchInternal`, not `LaunchThrowawayRun`** — `TryAgain()` calls `LaunchInternal` directly and every attempt reseeds, so the retained snapshot (the `_lastRequest` sibling) must be refreshed per attempt or the Completion-screen Export exports a stale attempt's RNG.
+- **`PrepareOnly` should skip more than scene creation:** `LaunchInternal` stops menu/run music at the top and runs heavy `PreloadManager` asset loads — a pure "Export without playing" should do neither.
 
 Three entry points share this one capture point:
 1. **Real "Start" on `DojoReplaySetupModal`** — normal play, unchanged. The snapshot captured during this launch is retained in memory (a new sibling to `DojoLaunch`'s existing `_lastRequest` field) so the Completion screen can offer to export it after the fact, win or lose.
@@ -579,15 +591,17 @@ Three entry points share this one capture point:
 - Metadata: title, free-text comment, created date. No account/author system — if attribution matters it's just another free-text field the exporter fills in.
 - Compatibility fields: game `build_id`, this mod's version (schema_version for the payload itself, so the format can evolve independently of those two).
 
-### 12c. Compatibility gate (refuse on mismatch)
+### 12c. Compatibility gate (refuse on mismatch) — revised 2026-07-04
 
-Distinct from, and in addition to, the existing `DojoContentEligibility` content-resolve gate (§6/§5f) — content can resolve fine (same card/relic ids exist) while the shuffle/RNG-consumption logic has still changed between builds, silently breaking the "identical experience" promise without any missing-content error to catch it. On import, compare game `build_id` + mod version **exactly**; any mismatch refuses the import with a clear message, before the content-eligibility check even runs.
+Distinct from, and in addition to, the existing `DojoContentEligibility` content-resolve gate (§6/§5f) — content can resolve fine (same card/relic ids exist) while the shuffle/RNG-consumption logic has still changed between builds, silently breaking the "identical experience" promise without any missing-content error to catch it. On import, compare game `build_id` **exactly** and the payload's own `schema_version` **exactly**; either mismatch refuses the import with a clear message, before the content-eligibility check even runs. **The mod version is recorded in the payload for diagnostics but does NOT gate** (decided 2026-07-04, revising the original draft): fight determinism is driven by game code, so exact mod-version matching would orphan every previously shared fight on every mod release while adding no real safety — format changes are already covered by the payload `schema_version`.
 
 ### 12d. Transport
 
 Two encodings of the same payload:
 - **File** — canonical JSON, same style as the rest of this mod's save-adjacent formats.
 - **Compact code** — the payload run through the game's own `IPacketSerializable`/`PacketWriter` binary encoding (already used for `SerializableRun` and network sync — reuse it rather than hand-rolling a binary format), then gzip + base64. **Expectation to set:** because the payload carries a full deck + relic list (not just a seed), this is a long paste-able blob, not a short human-typable code like a classic StS seed string.
+
+**Open consideration (flagged 2026-07-04, decide at implementation time):** two encodings of one payload are two serializers that must never disagree. Since the compact code is a long blob either way, gzip+base64 of the canonical JSON would collapse this to a single format at maybe 2-3× the paste length — weigh that against the `PacketWriter` reuse before committing.
 
 ### 12e. Import UX — "Load a Fight"
 
@@ -603,7 +617,7 @@ A new, mod-owned directory that never derives from or overlaps with `UserDataPat
 
 ### 12g. Browsing — a second, separate list
 
-**"Saved Fights"**, a flat list distinct from the existing Run History browser (`NDojoScreen`/`DojoRunRow`, §5i/§5j) — deliberately separate rather than folded into it, since these are individual captured/imported fight setups, not full multi-floor runs: no per-act floor map, no floor-by-floor drill-in, just one row per saved fight. Each row: title, comment, character, ascension, encounter name, created date, and a badge distinguishing "created by you" vs. "imported." Reuses the filter/sort/search pattern already proven in `DojoRunListQueries` (§5i) against this much simpler schema. Clicking a row opens the same read-only summary-strip preview as a fresh paste (12e) with Start/Cancel.
+**"Saved Fights"**, a flat list distinct from the existing Run History browser (`NDojoScreen`/`DojoRunRow`, §5i/§5j) — deliberately separate rather than folded into it, since these are individual captured/imported fight setups, not full multi-floor runs: no per-act floor map, no floor-by-floor drill-in, just one row per saved fight. **UI home (decided 2026-07-04): a Runs / Saved Fights tab-style toggle on the existing `NDojoScreen`** (one screen, reusing its chrome and sidebar filter/sort pattern), with the "Load a Fight" paste box (12e) at the top of the Saved Fights view. Each row: title, comment, character, ascension, encounter name, created date, and a badge distinguishing "created by you" vs. "imported." Reuses the filter/sort/search pattern already proven in `DojoRunListQueries` (§5i) against this much simpler schema. Clicking a row opens the same read-only summary-strip preview as a fresh paste (12e) with Start/Cancel.
 
 ### 12h. Fast-follow (explicitly NOT in v1)
 
