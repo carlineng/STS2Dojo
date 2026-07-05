@@ -51,9 +51,10 @@ namespace STS2Dojo.STS2DojoCode;
 public partial class DojoCompletionScreen : NTopBarPortrait, IScreenContext
 {
     private const float PanelWidth = 720f;
-    // 540 with three buttons; grew when the §12 Export button made it four (4*82 + 3*14 = 370 of button
-    // stack inside the panel's 118/38 vertical margins).
-    private const float PanelHeight = 620f;
+    // 540 with three buttons; grew when the §12 export split made it five — Try Again, Copy Fight Code,
+    // Save to Saved Fights, Return to Dojo, Return to Main Menu (5*82 + 4*14 = 466 of button stack inside
+    // the panel's 118/38 vertical margins).
+    private const float PanelHeight = 716f;
     private const float ButtonWidth = 620f;
     private const float ButtonHeight = 82f;
     private const float ButtonTextHorizontalPadding = 52f;
@@ -64,10 +65,12 @@ public partial class DojoCompletionScreen : NTopBarPortrait, IScreenContext
         typeof(NHoverTipSet).GetField("_activeHoverTips", BindingFlags.NonPublic | BindingFlags.Static);
 
     private DojoCompletionEventOptionButton _tryAgainButton = null!;
-    private DojoCompletionEventOptionButton _exportButton = null!;
+    private DojoCompletionEventOptionButton _copyCodeButton = null!;
+    private DojoCompletionEventOptionButton _saveFightButton = null!;
     private DojoCompletionEventOptionButton _returnToDojoButton = null!;
     private DojoCompletionEventOptionButton _returnToMainMenuButton = null!;
-    private string? _exportedCode;
+    private string? _copiedCode;
+    private bool _savedToLibrary;
     private CanvasItem? _hoverTipsContainerCanvasItem;
     private bool _blockedHoverTips;
     private bool _previousHoverTipsContainerVisible;
@@ -245,13 +248,15 @@ public partial class DojoCompletionScreen : NTopBarPortrait, IScreenContext
         }
 
         _tryAgainButton = CreateEventOptionButton(labelTemplate, "Try Again");
-        _exportButton = CreateEventOptionButton(labelTemplate, "Export Fight Code");
+        _copyCodeButton = CreateEventOptionButton(labelTemplate, "Copy Fight Code");
+        _saveFightButton = CreateEventOptionButton(labelTemplate, "Save to Saved Fights");
         _returnToDojoButton = CreateEventOptionButton(labelTemplate, "Return to Dojo");
         _returnToMainMenuButton = CreateEventOptionButton(labelTemplate, "Return to Main Menu");
         labelTemplate.QueueFreeSafely();
 
         box.AddChild(_tryAgainButton);
-        box.AddChild(_exportButton);
+        box.AddChild(_copyCodeButton);
+        box.AddChild(_saveFightButton);
         box.AddChild(_returnToDojoButton);
         box.AddChild(_returnToMainMenuButton);
         return true;
@@ -260,31 +265,47 @@ public partial class DojoCompletionScreen : NTopBarPortrait, IScreenContext
     private void WireButtons()
     {
         _tryAgainButton.SetText("Try Again");
-        _exportButton.SetText("Export Fight Code");
+        _copyCodeButton.SetText("Copy Fight Code");
+        _saveFightButton.SetText("Save to Saved Fights");
         _returnToDojoButton.SetText("Return to Dojo");
         _returnToMainMenuButton.SetText("Return to Main Menu");
 
         _tryAgainButton.Released += _ => TaskHelper.RunSafely(OnTryAgain());
-        _exportButton.Released += _ => OnExport();
+        _copyCodeButton.Released += _ => OnCopyCode();
+        _saveFightButton.Released += _ => OnSaveFight();
         _returnToDojoButton.Released += _ => TaskHelper.RunSafely(OnReturnToDojo());
         _returnToMainMenuButton.Released += _ => TaskHelper.RunSafely(OnReturnToMainMenu());
     }
 
-    /// <summary>§12a entry point 3: packages the snapshot DojoLaunch captured for the attempt that just
-    /// concluded (win or lose) — no recapture. A second press after success just re-copies the code
-    /// instead of writing a duplicate library entry.</summary>
-    private void OnExport()
+    /// <summary>§12a entry point 3: copies a share code for the attempt that just concluded (win or lose)
+    /// — no recapture, DojoLaunch already snapshotted it. A second press just re-copies the same code.</summary>
+    private void OnCopyCode()
     {
-        if (_exportedCode != null)
+        if (_copiedCode != null)
         {
-            DisplayServer.ClipboardSet(_exportedCode);
-            _exportButton.SetText("Code Copied Again!");
+            DisplayServer.ClipboardSet(_copiedCode);
+            _copyCodeButton.SetText("Code Copied Again!");
             return;
         }
 
-        SharedFightExporter.ExportResult result = SharedFightExporter.Export(DojoLaunch.LastSnapshot);
-        _exportedCode = result.Code;
-        _exportButton.SetText(result.Message);
+        SharedFightExporter.ExportResult result = SharedFightExporter.CopyCode(DojoLaunch.LastSnapshot);
+        _copiedCode = result.Code;
+        _copyCodeButton.SetText(result.Message);
+    }
+
+    /// <summary>The other half of the export split: writes the just-concluded fight into the Saved Fights
+    /// library (no clipboard). Guarded so a second press doesn't create a duplicate entry.</summary>
+    private void OnSaveFight()
+    {
+        if (_savedToLibrary)
+        {
+            _saveFightButton.SetText("Already Saved");
+            return;
+        }
+
+        SharedFightExporter.ExportResult result = SharedFightExporter.SaveToLibrary(DojoLaunch.LastSnapshot);
+        _savedToLibrary = result.Success;
+        _saveFightButton.SetText(result.Message);
     }
 
     private static MegaLabel? TryCreateButtonLabelTemplate()

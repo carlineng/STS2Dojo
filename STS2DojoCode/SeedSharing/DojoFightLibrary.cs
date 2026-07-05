@@ -57,6 +57,29 @@ public static class DojoFightLibrary
         return finalPath;
     }
 
+    /// <summary>Overwrites an existing entry's file in place (used by the §12h edit-metadata flow —
+    /// rename title / re-comment). Keeps the original path/filename: the filename's title slug goes stale
+    /// but identity lives in the timestamp, so this is purely cosmetic and avoids orphaning the entry.
+    /// Temp-file + move, same crash-safety as <see cref="Save"/>.</summary>
+    public static void Overwrite(string filePath, SharedFightPayload payload, Action<string>? log = null)
+    {
+        string tempPath = filePath + ".tmp";
+        File.WriteAllText(tempPath, SharedFightCodec.ToJson(payload));
+        File.Move(tempPath, filePath, overwrite: true);
+        log?.Invoke($"[STS2Dojo] Updated saved fight '{payload.Title}' at {filePath}.");
+    }
+
+    /// <summary>Deletes an entry's file (the §12h delete flow). No-throw-on-missing: a file already gone
+    /// is the desired end state.</summary>
+    public static void Delete(string filePath, Action<string>? log = null)
+    {
+        if (File.Exists(filePath))
+        {
+            File.Delete(filePath);
+            log?.Invoke($"[STS2Dojo] Deleted saved fight at {filePath}.");
+        }
+    }
+
     /// <summary>Loads every readable entry, newest-created first. Unreadable/damaged files are counted
     /// (for an aggregate "N unreadable" UI note) and logged, never thrown.</summary>
     public static SavedFightListing List(string directory, Action<string>? log = null)
