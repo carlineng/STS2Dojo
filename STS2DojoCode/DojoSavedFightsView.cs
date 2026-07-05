@@ -3,6 +3,10 @@ using System.Linq;
 using Godot;
 using MegaCrit.Sts2.Core.Assets;
 using MegaCrit.Sts2.Core.Helpers;
+using MegaCrit.Sts2.Core.Map;
+using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Rooms;
+using MegaCrit.Sts2.Core.Saves.Runs;
 using STS2Dojo.STS2DojoCode.SeedSharing;
 using SizeFlags = Godot.Control.SizeFlags;
 
@@ -10,21 +14,21 @@ namespace STS2Dojo.STS2DojoCode;
 
 /// <summary>
 /// The Saved Fights half of <see cref="NDojoScreen"/> (§12e/§12g, UI-home decision 2026-07-04: a tab on
-/// the Dojo screen, not a separate submenu): a paste box that imports an exported fight the moment one
-/// is pasted (no separate import button), over a flat newest-first list of the library — one row per
-/// saved fight with title/character/ascension/encounter/date, a created-by-you vs imported badge, and
-/// an in-place expandable Start/summary section (kept inline rather than a modal: consistent with the
-/// run browser's expand-in-place philosophy, and §5m-safe).
+/// the Dojo screen, not a separate submenu): a paste box + explicit Submit button that imports an exported
+/// fight, over a flat newest-first list of the library. Each row is fully expanded by default (no Load
+/// toggle) and shows the fight's identity the same way the run browser does — a character avatar + ascension
+/// badge, a boss/elite/monster avatar for the encounter, and the fight's relic bar — plus per-row actions:
+/// Replay, Copy Code, Edit (title/description), and Delete (behind a confirmation modal). The most recently
+/// imported row keeps a gold highlight border until the next successful action on the screen.
 ///
 /// Deliberately a plain class owning script-less nodes (the §5m/§6 rule — mod classes deriving Godot
-/// built-ins get broken script dispatch); the only scripted children are <see cref="DojoChip"/>s, which
-/// are already in proven use all over this screen. v1 keeps the list unfiltered (the sidebar's
-/// character/ascension filters apply to runs only) — wiring them in is cheap follow-up work if saved
-/// fights ever number enough to need it.
+/// built-ins get broken script dispatch); the only scripted children are <see cref="DojoChip"/>s and the
+/// two modal classes (<see cref="DojoConfirmModal"/>/<see cref="DojoEditFightModal"/>), all NButton- or
+/// game-class-derived and in proven use.
 /// </summary>
 internal sealed class DojoSavedFightsView
 {
-    private const int PasteAttemptMinLength = 12;
+    private const float RelicIconSize = 28f;
 
     public Control Root { get; }
 
@@ -32,9 +36,14 @@ internal sealed class DojoSavedFightsView
     private readonly Label _statusLabel;
     private readonly ScrollContainer _scroll;
     private readonly VBoxContainer _rowContainer;
-    private readonly Godot.Timer _pasteDebounce;
 
     private bool _importing;
+
+    /// <summary>Path of the row to draw with a highlight border (the just-imported fight), and a live
+    /// reference to its panel so a non-Refresh action can clear the border immediately. <c>_highlightedPath</c>
+    /// is the source of truth that survives a <see cref="Refresh"/> (the panel node is rebuilt).</summary>
+    private string? _highlightedPath;
+    private PanelContainer? _highlightedPanel;
 
     public DojoSavedFightsView()
     {
@@ -49,10 +58,17 @@ internal sealed class DojoSavedFightsView
         root.AddChild(header);
         header.AddChild(DojoUi.MakeLabel("Saved Fights", 26, StsColors.cream));
 
+        // §12e was paste-to-import; now there's an explicit Submit button on the right (per request) so a
+        // paste no longer fires validation on its own.
+        var pasteRow = new HBoxContainer();
+        pasteRow.AddThemeConstantOverride("separation", 10);
+        root.AddChild(pasteRow);
+
         _pasteBox = new LineEdit();
-        _pasteBox.PlaceholderText = "Paste the contents of an exported fight to replay it";
+        _pasteBox.PlaceholderText = "Paste the contents of an exported fight, then press Submit";
         _pasteBox.ClearButtonEnabled = true;
         _pasteBox.CustomMinimumSize = new Vector2(0, 46);
+        _pasteBox.SizeFlagsHorizontal = SizeFlags.ExpandFill;
         _pasteBox.AddThemeStyleboxOverride("normal",
             NDojoScreen.MakePanelStyle(new Color("10131A"), NDojoScreen.RowBorderColor, 8));
         _pasteBox.AddThemeStyleboxOverride("focus",
@@ -60,23 +76,17 @@ internal sealed class DojoSavedFightsView
         _pasteBox.AddThemeColorOverride("font_color", StsColors.cream);
         _pasteBox.AddThemeColorOverride("font_placeholder_color", NDojoScreen.FaintText);
         _pasteBox.AddThemeFontSizeOverride("font_size", 16);
-        Font? uiFont = DojoUi.UiFont;
-        if (uiFont != null)
+        if (DojoUi.UiFont is { } uiFont)
         {
             _pasteBox.AddThemeFontOverride("font", uiFont);
         }
-        root.AddChild(_pasteBox);
+        _pasteBox.TextSubmitted += _ => Submit();
+        pasteRow.AddChild(_pasteBox);
 
-        // §12e: pasting IS the import action. TextChanged also fires per keystroke, so imports are
-        // debounced and short fragments are ignored silently instead of yelling "invalid" at someone
-        // who typed two characters.
-        _pasteDebounce = new Godot.Timer();
-        _pasteDebounce.WaitTime = 0.35;
-        _pasteDebounce.OneShot = true;
-        _pasteDebounce.Timeout += () => TryImport(fromSubmit: false);
-        root.AddChild(_pasteDebounce);
-        _pasteBox.TextChanged += _ => _pasteDebounce.Start();
-        _pasteBox.TextSubmitted += _ => TryImport(fromSubmit: true);
+        DojoChip submit = DojoUi.MakeChip("Submit", compact: false);
+        submit.SizeFlagsVertical = SizeFlags.ShrinkCenter;
+        submit.Released += _ => Submit();
+        pasteRow.AddChild(submit);
 
         _statusLabel = DojoUi.MakeLabel(string.Empty, 15, NDojoScreen.MutedText);
         _statusLabel.AutowrapMode = TextServer.AutowrapMode.WordSmart;
@@ -98,6 +108,7 @@ internal sealed class DojoSavedFightsView
 
     public void Refresh()
     {
+        _highlightedPanel = null; // rows are about to be freed; re-established below if the path still lists
         foreach (Node child in _rowContainer.GetChildren())
         {
             _rowContainer.RemoveChild(child);
@@ -133,7 +144,7 @@ internal sealed class DojoSavedFightsView
         SetStatus(summary, isError: false);
     }
 
-    private void TryImport(bool fromSubmit)
+    private void Submit()
     {
         if (_importing)
         {
@@ -141,8 +152,9 @@ internal sealed class DojoSavedFightsView
         }
 
         string pasted = _pasteBox.Text?.Trim() ?? string.Empty;
-        if (pasted.Length == 0 || (!fromSubmit && pasted.Length < PasteAttemptMinLength))
+        if (pasted.Length == 0)
         {
+            SetStatus("Paste an exported fight code first.", isError: true);
             return;
         }
 
@@ -169,10 +181,11 @@ internal sealed class DojoSavedFightsView
                 return;
             }
 
+            string savedPath;
             try
             {
-                DojoFightLibrary.Save(SharedFightExporter.FightsDirectory, payload, SavedFightOrigin.Imported,
-                    message => MainFile.Logger.Info(message));
+                savedPath = DojoFightLibrary.Save(SharedFightExporter.FightsDirectory, payload,
+                    SavedFightOrigin.Imported, message => MainFile.Logger.Info(message));
             }
             catch (Exception e)
             {
@@ -182,8 +195,9 @@ internal sealed class DojoSavedFightsView
             }
 
             _pasteBox.Text = string.Empty;
+            _highlightedPath = savedPath; // BuildRow highlights the matching path on the Refresh below
             Refresh();
-            SetStatus($"Imported '{payload.Title}' — it's at the top of the list below.", isError: false);
+            SetStatus($"Imported '{payload.Title}' — highlighted below.", isError: false);
         }
         finally
         {
@@ -198,15 +212,37 @@ internal sealed class DojoSavedFightsView
             "font_color", isError ? new Color("E08A7A") : NDojoScreen.MutedText);
     }
 
+    /// <summary>Drops the just-imported highlight (its border) the moment any other successful action
+    /// completes on the screen. Clears both the persistent path and the live panel's border in place, so
+    /// callers that don't rebuild the list (e.g. Copy Code) still visibly clear it.</summary>
+    private void ClearHighlight()
+    {
+        if (_highlightedPanel != null && GodotObject.IsInstanceValid(_highlightedPanel))
+        {
+            _highlightedPanel.AddThemeStyleboxOverride(
+                "panel", NDojoScreen.MakePanelStyle(NDojoScreen.RowColor, NDojoScreen.RowBorderColor, 10));
+        }
+        _highlightedPanel = null;
+        _highlightedPath = null;
+    }
+
     // ------------------------------------------------------------------ rows
 
     private Control BuildRow(SavedFightEntry entry)
     {
         SharedFightPayload payload = entry.Payload;
+        bool highlighted = _highlightedPath != null && entry.FilePath == _highlightedPath;
 
         var rowPanel = new PanelContainer();
-        rowPanel.AddThemeStyleboxOverride(
-            "panel", NDojoScreen.MakePanelStyle(NDojoScreen.RowColor, NDojoScreen.RowBorderColor, 10));
+        StyleBoxFlat rowStyle = highlighted
+            ? NDojoScreen.MakePanelStyle(NDojoScreen.RowColor, StsColors.gold, 10)
+            : NDojoScreen.MakePanelStyle(NDojoScreen.RowColor, NDojoScreen.RowBorderColor, 10);
+        if (highlighted)
+        {
+            rowStyle.SetBorderWidthAll(2);
+            _highlightedPanel = rowPanel;
+        }
+        rowPanel.AddThemeStyleboxOverride("panel", rowStyle);
         rowPanel.SizeFlagsHorizontal = SizeFlags.ExpandFill;
 
         var pad = new MarginContainer();
@@ -216,22 +252,133 @@ internal sealed class DojoSavedFightsView
         pad.AddThemeConstantOverride("margin_bottom", 12);
         rowPanel.AddChild(pad);
 
+        var columns = new HBoxContainer();
+        columns.AddThemeConstantOverride("separation", 16);
+        columns.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        pad.AddChild(columns);
+
+        columns.AddChild(BuildCharacterColumn(payload));
+        columns.AddChild(BuildMonsterAvatar(payload));
+        columns.AddChild(BuildCenterColumn(payload, entry.Origin));
+        columns.AddChild(BuildActionsColumn(entry, rowPanel));
+
+        return rowPanel;
+    }
+
+    /// <summary>Character avatar + ascension badge, matching the run browser's badge column.</summary>
+    private static Control BuildCharacterColumn(SharedFightPayload payload)
+    {
+        var box = new VBoxContainer();
+        box.AddThemeConstantOverride("separation", 6);
+        box.SizeFlagsVertical = SizeFlags.ShrinkBegin;
+
+        ModelId characterId = payload.CharacterId ?? ModelId.none;
+        box.AddChild(DojoUi.MakeCharacterToken(characterId, ResolveCharacterColor(characterId)));
+
+        Label ascension = DojoUi.MakeLabel($"A{payload.Ascension}", 15, StsColors.gold);
+        ascension.HorizontalAlignment = HorizontalAlignment.Center;
+        ascension.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        box.AddChild(ascension);
+        return box;
+    }
+
+    private static Color ResolveCharacterColor(ModelId characterId)
+    {
+        try
+        {
+            CharacterModel? model = ModelDb.GetByIdOrNull<CharacterModel>(characterId);
+            if (model != null)
+            {
+                // Same dim as the run rows — the raw name colors read too neon as a solid ring.
+                return model.NameColor.Darkened(0.18f);
+            }
+        }
+        catch (Exception)
+        {
+            // fall through to the neutral default
+        }
+        return StsColors.gray;
+    }
+
+    /// <summary>A boss/elite/monster avatar for the fight's encounter — the boss portrait when it's a boss,
+    /// otherwise the elite/normal map icon, mirroring <see cref="DojoFightPill"/>'s icon resolution.</summary>
+    private static Control BuildMonsterAvatar(SharedFightPayload payload)
+    {
+        var token = new PanelContainer();
+        token.CustomMinimumSize = new Vector2(64, 64);
+        token.SizeFlagsHorizontal = SizeFlags.ShrinkCenter;
+        token.SizeFlagsVertical = SizeFlags.ShrinkBegin;
+        token.MouseFilter = Control.MouseFilterEnum.Ignore;
+
+        StyleBoxFlat style = NDojoScreen.MakePanelStyle(
+            new Color("242B35"), NDojoScreen.RowBorderColor, 10);
+        style.SetContentMarginAll(8);
+        token.AddThemeStyleboxOverride("panel", style);
+
+        Texture2D? icon = ResolveEncounterIcon(payload.EncounterId);
+        if (icon != null)
+        {
+            var rect = new TextureRect();
+            rect.Texture = icon;
+            rect.ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize;
+            rect.StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered;
+            rect.MouseFilter = Control.MouseFilterEnum.Ignore;
+            token.AddChild(rect);
+        }
+        else
+        {
+            Label q = DojoUi.MakeLabel("?", 26, NDojoScreen.MutedText);
+            q.HorizontalAlignment = HorizontalAlignment.Center;
+            q.VerticalAlignment = VerticalAlignment.Center;
+            token.AddChild(q);
+        }
+        return token;
+    }
+
+    private static Texture2D? ResolveEncounterIcon(ModelId? encounterId)
+    {
+        if (encounterId == null)
+        {
+            return null;
+        }
+        try
+        {
+            RoomType roomType = ModelDb.GetByIdOrNull<EncounterModel>(encounterId)?.RoomType ?? RoomType.Monster;
+            MapPointType mapPointType = roomType switch
+            {
+                RoomType.Boss => MapPointType.Boss,
+                RoomType.Elite => MapPointType.Elite,
+                _ => MapPointType.Monster
+            };
+            ModelId? iconModelId = roomType == RoomType.Boss ? encounterId : null;
+            string? iconPath = ImageHelper.GetRoomIconPath(mapPointType, roomType, iconModelId);
+            return iconPath != null ? PreloadManager.Cache.GetCompressedTexture2D(iconPath) : null;
+        }
+        catch (Exception e)
+        {
+            MainFile.Logger.Info("[STS2Dojo] Could not resolve encounter icon for " + encounterId + ": " + e.Message);
+            return null;
+        }
+    }
+
+    private Control BuildCenterColumn(SharedFightPayload payload, SavedFightOrigin origin)
+    {
         var column = new VBoxContainer();
         column.AddThemeConstantOverride("separation", 6);
-        pad.AddChild(column);
+        column.SizeFlagsHorizontal = SizeFlags.ExpandFill;
 
         var titleRow = new HBoxContainer();
         titleRow.AddThemeConstantOverride("separation", 10);
         column.AddChild(titleRow);
-
         titleRow.AddChild(DojoUi.MakeLabel(payload.Title, 18, StsColors.cream));
-        titleRow.AddChild(MakeOriginBadge(entry.Origin));
-        var filler = new Control();
-        filler.SizeFlagsHorizontal = SizeFlags.ExpandFill;
-        titleRow.AddChild(filler);
+        titleRow.AddChild(MakeOriginBadge(origin));
 
-        var loadChip = DojoUi.MakeChip("Load", compact: true);
-        titleRow.AddChild(loadChip);
+        if (!string.IsNullOrWhiteSpace(payload.Comment))
+        {
+            Label comment = DojoUi.MakeLabel(payload.Comment, 14, NDojoScreen.FaintText);
+            comment.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+            column.AddChild(comment);
+        }
 
         string character = payload.CharacterId != null
             ? DojoDisplayNames.Character(payload.CharacterId) : "?";
@@ -242,61 +389,171 @@ internal sealed class DojoSavedFightsView
             payload.CreatedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm"),
             14, NDojoScreen.MutedText));
 
-        if (!string.IsNullOrWhiteSpace(payload.Comment))
+        Control? relicBar = BuildRelicBar(payload);
+        if (relicBar != null)
         {
-            Label comment = DojoUi.MakeLabel(payload.Comment, 13, NDojoScreen.FaintText);
-            comment.AutowrapMode = TextServer.AutowrapMode.WordSmart;
-            column.AddChild(comment);
+            column.AddChild(relicBar);
         }
 
-        // The expand-in-place confirm section (the §12e "preview → Start/Cancel", inline for v1): fight
-        // numbers + Start, or the refusal text when the entry no longer passes the gates.
-        VBoxContainer confirm = BuildConfirmSection(payload);
-        confirm.Visible = false;
-        column.AddChild(confirm);
-
-        loadChip.Released += _ =>
-        {
-            confirm.Visible = !confirm.Visible;
-            loadChip.Selected = confirm.Visible;
-        };
-
-        return rowPanel;
-    }
-
-    private static VBoxContainer BuildConfirmSection(SharedFightPayload payload)
-    {
-        var confirm = new VBoxContainer();
-        confirm.AddThemeConstantOverride("separation", 8);
-
-        confirm.AddChild(DojoUi.MakeLabel(
+        // Always-loaded fight numbers (§12e's expanded state, now the default): the "Same seed every
+        // attempt…" explainer line is deliberately dropped.
+        column.AddChild(DojoUi.MakeLabel(
             $"HP {payload.CurrentHp}/{payload.MaxHp} · Gold {payload.Gold} · {payload.Deck.Count} cards · " +
             $"{payload.Relics.Count} relics · {payload.Potions.Count} potions · Seed {payload.Seed}",
-            14, StsColors.cream));
-        confirm.AddChild(DojoUi.MakeLabel(
-            "Same seed every attempt — the opening hand and enemy actions repeat exactly, including Try Again.",
-            13, NDojoScreen.FaintText));
+            14, NDojoScreen.MutedText));
 
-        // Gates re-checked at expand time (not row-build time) so a mod/content change mid-session is
-        // reflected the moment someone actually tries to use the entry.
-        string? refusal = SharedFightLauncher.GetImportRefusal(payload);
-        if (refusal != null)
+        return column;
+    }
+
+    /// <summary>The fight's relic bar — only the relics it carries entering that fight (payload.Relics IS
+    /// the captured loadout, i.e. exactly "up until then"). Icons only, wrapped, unresolvable relics skipped
+    /// (same quick-glance treatment as the run rows).</summary>
+    private static Control? BuildRelicBar(SharedFightPayload payload)
+    {
+        if (payload.Relics.Count == 0)
         {
-            Label refusalLabel = DojoUi.MakeLabel(refusal, 14, new Color("E08A7A"));
-            refusalLabel.AutowrapMode = TextServer.AutowrapMode.WordSmart;
-            confirm.AddChild(refusalLabel);
-            return confirm;
+            return null;
         }
 
-        var actions = new HBoxContainer();
-        actions.AddThemeConstantOverride("separation", 10);
-        confirm.AddChild(actions);
+        var bar = new HFlowContainer();
+        bar.AddThemeConstantOverride("h_separation", 6);
+        bar.AddThemeConstantOverride("v_separation", 6);
 
-        var startChip = DojoUi.MakeChip("Start Fight", compact: false);
-        startChip.Released += _ => TaskHelper.RunSafely(SharedFightLauncher.Launch(payload));
-        actions.AddChild(startChip);
+        bool any = false;
+        foreach (SerializableRelic relic in payload.Relics)
+        {
+            if (relic?.Id == null)
+            {
+                continue;
+            }
+            Texture2D? icon = DojoUi.ResolveRelicIconTexture(relic.Id);
+            if (icon == null)
+            {
+                continue;
+            }
+            var rect = new TextureRect();
+            rect.Texture = icon;
+            rect.CustomMinimumSize = new Vector2(RelicIconSize, RelicIconSize);
+            rect.ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize;
+            rect.StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered;
+            rect.MouseFilter = Control.MouseFilterEnum.Ignore;
+            bar.AddChild(rect);
+            any = true;
+        }
 
-        return confirm;
+        return any ? bar : null;
+    }
+
+    private Control BuildActionsColumn(SavedFightEntry entry, PanelContainer rowPanel)
+    {
+        SharedFightPayload payload = entry.Payload;
+
+        var actions = new VBoxContainer();
+        actions.AddThemeConstantOverride("separation", 8);
+        actions.SizeFlagsVertical = SizeFlags.ShrinkCenter;
+        actions.CustomMinimumSize = new Vector2(150, 0);
+
+        // Gates re-checked at row-build time so a mod/content change mid-session is reflected.
+        string? refusal = SharedFightLauncher.GetImportRefusal(payload);
+        if (refusal == null)
+        {
+            DojoChip replay = DojoUi.MakeChip("Replay Fight", compact: false);
+            replay.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+            replay.Released += _ =>
+            {
+                ClearHighlight();
+                TaskHelper.RunSafely(SharedFightLauncher.Launch(payload));
+            };
+            actions.AddChild(replay);
+        }
+        else
+        {
+            Label refusalLabel = DojoUi.MakeLabel(refusal, 13, new Color("E08A7A"));
+            refusalLabel.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+            refusalLabel.CustomMinimumSize = new Vector2(150, 0);
+            actions.AddChild(refusalLabel);
+        }
+
+        DojoChip copy = DojoUi.MakeChip("Copy Code", compact: true);
+        copy.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        copy.Released += _ => OnCopyCode(payload);
+        actions.AddChild(copy);
+
+        DojoChip edit = DojoUi.MakeChip("Edit", compact: true);
+        edit.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        edit.Released += _ => OnEdit(entry);
+        actions.AddChild(edit);
+
+        DojoChip delete = DojoUi.MakeChip("Delete", compact: true);
+        delete.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        delete.Released += _ => OnDelete(entry);
+        actions.AddChild(delete);
+
+        return actions;
+    }
+
+    // ------------------------------------------------------------------ per-row actions
+
+    private void OnCopyCode(SharedFightPayload payload)
+    {
+        try
+        {
+            string code = SharedFightCodec.ToCode(payload);
+            DisplayServer.ClipboardSet(code);
+            ClearHighlight();
+            SetStatus($"Copied '{payload.Title}' code to clipboard.", isError: false);
+        }
+        catch (Exception e)
+        {
+            MainFile.Logger.Error("[STS2Dojo] Could not copy fight code: " + e);
+            SetStatus("Could not copy the fight code — see log.", isError: true);
+        }
+    }
+
+    private void OnEdit(SavedFightEntry entry)
+    {
+        DojoEditFightModal.Open(entry.Payload.Title, entry.Payload.Comment, (title, description) =>
+        {
+            entry.Payload.Title = string.IsNullOrWhiteSpace(title) ? entry.Payload.Title : title;
+            entry.Payload.Comment = description;
+            try
+            {
+                DojoFightLibrary.Overwrite(entry.FilePath, entry.Payload, message => MainFile.Logger.Info(message));
+            }
+            catch (Exception e)
+            {
+                MainFile.Logger.Error("[STS2Dojo] Could not update saved fight: " + e);
+                SetStatus("Could not save your edits — see log.", isError: true);
+                return;
+            }
+            ClearHighlight();
+            Refresh();
+            SetStatus($"Updated '{entry.Payload.Title}'.", isError: false);
+        });
+    }
+
+    private void OnDelete(SavedFightEntry entry)
+    {
+        DojoConfirmModal.Open(
+            "Delete Saved Fight?",
+            $"'{entry.Payload.Title}' will be permanently removed from your Saved Fights. This can't be undone.",
+            "Delete",
+            () =>
+            {
+                try
+                {
+                    DojoFightLibrary.Delete(entry.FilePath, message => MainFile.Logger.Info(message));
+                }
+                catch (Exception e)
+                {
+                    MainFile.Logger.Error("[STS2Dojo] Could not delete saved fight: " + e);
+                    SetStatus("Could not delete the fight — see log.", isError: true);
+                    return;
+                }
+                ClearHighlight();
+                Refresh();
+                SetStatus($"Deleted '{entry.Payload.Title}'.", isError: false);
+            });
     }
 
     private static Control MakeOriginBadge(SavedFightOrigin origin)

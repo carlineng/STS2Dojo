@@ -71,8 +71,10 @@ public partial class NDojoReplaySetupModal : NTopBarPortrait, IScreenContext
     private readonly List<StateRow> _rows = new();
     private NPopupYesNoButton? _startButton;
     private NPopupYesNoButton? _cancelButton;
-    private DojoPresetChip? _exportChip;
-    private Label? _exportChipLabel;
+    private DojoPresetChip? _copyChip;
+    private Label? _copyChipLabel;
+    private DojoPresetChip? _saveChip;
+    private Label? _saveChipLabel;
     private bool _exportInFlight;
 
     public Control? DefaultFocusedControl => _startButton;
@@ -743,14 +745,24 @@ public partial class NDojoReplaySetupModal : NTopBarPortrait, IScreenContext
         spacer.SizeFlagsHorizontal = SizeFlags.ExpandFill;
         bar.AddChild(spacer);
 
-        // §12a entry point 2: capture-and-export without playing. A preset-chip (not a third
-        // NPopupYesNoButton) on purpose — IsYes wiring re-registers confirm/cancel hotkeys, and this
-        // action must never steal ESC/confirm from Cancel/Start.
-        _exportChip = new DojoPresetChip();
-        _exportChip.Configure("Export Fight Code");
-        _exportChip.SizeFlagsVertical = SizeFlags.ShrinkCenter;
-        _exportChipLabel = _exportChip.GetChildren().OfType<Label>().FirstOrDefault();
-        bar.AddChild(_exportChip);
+        // §12a entry point 2: capture-and-export without playing, offered as two choices — copy the share
+        // code, or save it to the Saved Fights library. Preset-chips (not NPopupYesNoButtons) on purpose —
+        // IsYes wiring re-registers confirm/cancel hotkeys, and these must never steal ESC/confirm from
+        // Cancel/Start.
+        var exportGroup = new HBoxContainer();
+        exportGroup.AddThemeConstantOverride("separation", 8);
+        exportGroup.SizeFlagsVertical = SizeFlags.ShrinkCenter;
+
+        _copyChip = new DojoPresetChip();
+        _copyChip.Configure("Copy Code");
+        _copyChipLabel = _copyChip.GetChildren().OfType<Label>().FirstOrDefault();
+        exportGroup.AddChild(_copyChip);
+
+        _saveChip = new DojoPresetChip();
+        _saveChip.Configure("Save Fight");
+        _saveChipLabel = _saveChip.GetChildren().OfType<Label>().FirstOrDefault();
+        exportGroup.AddChild(_saveChip);
+        bar.AddChild(exportGroup);
 
         var spacer2 = new Control();
         spacer2.SizeFlagsHorizontal = SizeFlags.ExpandFill;
@@ -788,30 +800,36 @@ public partial class NDojoReplaySetupModal : NTopBarPortrait, IScreenContext
             TaskHelper.RunSafely(DojoReplayLauncher.LaunchReplay(history, floor, adjustments));
         };
 
-        if (_exportChip != null)
+        if (_copyChip != null)
         {
-            _exportChip.Released += _ => TaskHelper.RunSafely(ExportWithoutPlaying());
+            _copyChip.Released += _ => TaskHelper.RunSafely(ExportWithoutPlaying(copyToClipboard: true));
+        }
+        if (_saveChip != null)
+        {
+            _saveChip.Released += _ => TaskHelper.RunSafely(ExportWithoutPlaying(copyToClipboard: false));
         }
     }
 
     /// <summary>Runs the §12a prepare-only capture (identical sequence to Start, minus entering combat)
-    /// with the CURRENT stepper/preset values baked in, then saves+copies via the shared exporter. The
-    /// modal stays open — Start afterwards plays a fresh seed, which is expected: the export is its own
-    /// fight, not a preview of the next launch.</summary>
-    private async Task ExportWithoutPlaying()
+    /// with the CURRENT stepper/preset values baked in, then either copies the share code or saves it to
+    /// the library (the export split). The modal stays open — Start afterwards plays a fresh seed, which
+    /// is expected: the export is its own fight, not a preview of the next launch.</summary>
+    private async Task ExportWithoutPlaying(bool copyToClipboard)
     {
         if (_exportInFlight)
         {
             return;
         }
         _exportInFlight = true;
-        SetExportChipText("Exporting…");
+        SetExportChipText(copyToClipboard, copyToClipboard ? "Copying…" : "Saving…");
         try
         {
             DojoFightSnapshot? snapshot =
                 await DojoReplayLauncher.PrepareReplaySnapshot(_history, _globalFloor, BuildAdjustments());
-            SharedFightExporter.ExportResult result = SharedFightExporter.Export(snapshot);
-            SetExportChipText(result.Message);
+            SharedFightExporter.ExportResult result = copyToClipboard
+                ? SharedFightExporter.CopyCode(snapshot)
+                : SharedFightExporter.SaveToLibrary(snapshot);
+            SetExportChipText(copyToClipboard, result.Message);
         }
         finally
         {
@@ -819,16 +837,18 @@ public partial class NDojoReplaySetupModal : NTopBarPortrait, IScreenContext
         }
     }
 
-    private void SetExportChipText(string text)
+    private void SetExportChipText(bool copyChip, string text)
     {
-        if (_exportChip == null || _exportChipLabel == null)
+        DojoPresetChip? chip = copyChip ? _copyChip : _saveChip;
+        Label? label = copyChip ? _copyChipLabel : _saveChipLabel;
+        if (chip == null || label == null)
         {
             return;
         }
-        _exportChipLabel.Text = text;
+        label.Text = text;
         // Mirrors DojoPresetChip.Configure's sizing (13px font + 26px padding) — Configure itself can't
         // be re-run, it adds a fresh label each call.
-        _exportChip.CustomMinimumSize = new Vector2(DojoUi.MeasureTextWidth(text, 13) + 26, 27f);
+        chip.CustomMinimumSize = new Vector2(DojoUi.MeasureTextWidth(text, 13) + 26, 27f);
     }
 
     private DojoStateAdjustments BuildAdjustments()

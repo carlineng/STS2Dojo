@@ -26,10 +26,10 @@ public static class SharedFightExporter
 
     public sealed record ExportResult(bool Success, string Message, string? Code);
 
-    /// <summary>Packages and exports a captured snapshot. Never throws: the result's Message is always
-    /// presentable button/label text. v1 titles are auto-generated ("Encounter — date"); editing
-    /// metadata is an explicit fast-follow (§12h).</summary>
-    public static ExportResult Export(DojoFightSnapshot? snapshot)
+    /// <summary>Packages a captured snapshot and copies its share code to the clipboard WITHOUT writing a
+    /// library entry (the export-flow split asked for 2026-07: copy vs. save are now separate player
+    /// choices). Never throws: the result's Message is always presentable button/label text.</summary>
+    public static ExportResult CopyCode(DojoFightSnapshot? snapshot)
     {
         if (snapshot == null)
         {
@@ -38,29 +38,55 @@ public static class SharedFightExporter
 
         try
         {
-            DateTime now = DateTime.UtcNow;
-            SharedFightPayload payload = SharedFightPayload.FromSnapshot(
-                snapshot,
-                gameBuildId: CurrentGameBuildId,
-                modVersion: ModVersion,
-                title: DojoDisplayNames.Encounter(snapshot.EncounterId) + " — " +
-                       now.ToLocalTime().ToString("yyyy-MM-dd HH:mm"),
-                comment: string.Empty,
-                createdUtc: now);
-
-            DojoFightLibrary.Save(FightsDirectory, payload, SavedFightOrigin.Created,
-                message => MainFile.Logger.Info(message));
-
+            SharedFightPayload payload = BuildPayload(snapshot);
             string code = SharedFightCodec.ToCode(payload);
             DisplayServer.ClipboardSet(code);
             MainFile.Logger.Info(
-                $"[STS2Dojo] Exported fight '{payload.Title}' ({code.Length}-char code copied to clipboard).");
-            return new ExportResult(true, "Exported — code copied!", code);
+                $"[STS2Dojo] Copied fight code for '{payload.Title}' ({code.Length} chars) to clipboard.");
+            return new ExportResult(true, "Code copied to clipboard!", code);
         }
         catch (Exception e)
         {
-            MainFile.Logger.Error("[STS2Dojo] Fight export failed: " + e);
-            return new ExportResult(false, "Export failed (see log)", null);
+            MainFile.Logger.Error("[STS2Dojo] Fight code copy failed: " + e);
+            return new ExportResult(false, "Copy failed (see log)", null);
         }
+    }
+
+    /// <summary>Packages a captured snapshot and saves it to the Saved Fights library WITHOUT touching the
+    /// clipboard. The counterpart to <see cref="CopyCode"/>. Never throws.</summary>
+    public static ExportResult SaveToLibrary(DojoFightSnapshot? snapshot)
+    {
+        if (snapshot == null)
+        {
+            return new ExportResult(false, "Nothing to save", null);
+        }
+
+        try
+        {
+            SharedFightPayload payload = BuildPayload(snapshot);
+            DojoFightLibrary.Save(FightsDirectory, payload, SavedFightOrigin.Created,
+                message => MainFile.Logger.Info(message));
+            return new ExportResult(true, "Saved to Saved Fights!", null);
+        }
+        catch (Exception e)
+        {
+            MainFile.Logger.Error("[STS2Dojo] Fight save failed: " + e);
+            return new ExportResult(false, "Save failed (see log)", null);
+        }
+    }
+
+    /// <summary>Snapshot → payload, stamping build/mod/auto-metadata. v1 titles are auto-generated
+    /// ("Encounter — date"); the title/comment are editable afterwards from the Saved Fights screen (§12h).</summary>
+    private static SharedFightPayload BuildPayload(DojoFightSnapshot snapshot)
+    {
+        DateTime now = DateTime.UtcNow;
+        return SharedFightPayload.FromSnapshot(
+            snapshot,
+            gameBuildId: CurrentGameBuildId,
+            modVersion: ModVersion,
+            title: DojoDisplayNames.Encounter(snapshot.EncounterId) + " — " +
+                   now.ToLocalTime().ToString("yyyy-MM-dd HH:mm"),
+            comment: string.Empty,
+            createdUtc: now);
     }
 }
