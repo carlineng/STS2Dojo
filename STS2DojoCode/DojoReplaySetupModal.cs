@@ -812,8 +812,9 @@ public partial class NDojoReplaySetupModal : NTopBarPortrait, IScreenContext
 
     /// <summary>Runs the §12a prepare-only capture (identical sequence to Start, minus entering combat)
     /// with the CURRENT stepper/preset values baked in, then either copies the share code or saves it to
-    /// the library (the export split). The modal stays open — Start afterwards plays a fresh seed, which
-    /// is expected: the export is its own fight, not a preview of the next launch.</summary>
+    /// the library (the export split). Copy keeps the modal open (you may want to keep tuning); a
+    /// successful Save closes the modal and takes the player to the Saved Fights tab, where the new entry
+    /// is waiting — that IS the feedback for the save.</summary>
     private async Task ExportWithoutPlaying(bool copyToClipboard)
     {
         if (_exportInFlight)
@@ -829,6 +830,13 @@ public partial class NDojoReplaySetupModal : NTopBarPortrait, IScreenContext
             SharedFightExporter.ExportResult result = copyToClipboard
                 ? SharedFightExporter.CopyCode(snapshot)
                 : SharedFightExporter.SaveToLibrary(snapshot);
+
+            if (!copyToClipboard && result.Success)
+            {
+                NModalContainer.Instance?.Clear();
+                NDojoScreen.ShowSavedFightsTab();
+                return; // modal is torn down — don't touch its chips below
+            }
             SetExportChipText(copyToClipboard, result.Message);
         }
         finally
