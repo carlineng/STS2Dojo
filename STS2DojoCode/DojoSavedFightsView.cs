@@ -39,9 +39,21 @@ internal sealed class DojoSavedFightsView
 
     private bool _importing;
 
+    /// <summary>The full library, loaded once per <see cref="Refresh"/> (disk read) and filtered in memory
+    /// on every filter change — a saved-fights library is small, but this avoids re-reading/re-parsing every
+    /// file per keystroke. Each entry caches a lowercased search haystack (character/enemy/relic/title/seed).</summary>
+    private readonly System.Collections.Generic.List<LoadedEntry> _entries = new();
+    private int _unreadableFiles;
+
+    private string _search = string.Empty;
+    private ModelId? _characterFilter;
+    private int? _ascensionFilter;
+
+    private sealed record LoadedEntry(SavedFightEntry Entry, string Haystack);
+
     /// <summary>Path of the row to draw with a highlight border (the just-imported fight), and a live
     /// reference to its panel so a non-Refresh action can clear the border immediately. <c>_highlightedPath</c>
-    /// is the source of truth that survives a <see cref="Refresh"/> (the panel node is rebuilt).</summary>
+    /// is the source of truth that survives a rebuild (the panel node is rebuilt).</summary>
     private string? _highlightedPath;
     private PanelContainer? _highlightedPanel;
 
@@ -106,15 +118,12 @@ internal sealed class DojoSavedFightsView
 
     // ------------------------------------------------------------------ data
 
+    /// <summary>Re-reads the library from disk (rebuilding the cached entry+haystack list), then rebuilds
+    /// the visible rows under the current filters.</summary>
     public void Refresh()
     {
-        _highlightedPanel = null; // rows are about to be freed; re-established below if the path still lists
-        foreach (Node child in _rowContainer.GetChildren())
-        {
-            _rowContainer.RemoveChild(child);
-            child.QueueFreeSafely();
-        }
-        _scroll.ScrollVertical = 0;
+        _entries.Clear();
+        _unreadableFiles = 0;
 
         SavedFightListing listing;
         try
@@ -125,23 +134,132 @@ internal sealed class DojoSavedFightsView
         catch (Exception e)
         {
             MainFile.Logger.Error("[STS2Dojo] Could not list saved fights: " + e);
+            ClearRows();
             SetStatus("Could not read the Saved Fights library — see log.", isError: true);
             return;
         }
 
+        _unreadableFiles = listing.UnreadableFiles;
         foreach (SavedFightEntry entry in listing.Entries)
         {
-            _rowContainer.AddChild(BuildRow(entry));
+            _entries.Add(new LoadedEntry(entry, BuildHaystack(entry.Payload)));
         }
 
-        string summary = listing.Entries.Count == 0
-            ? "No saved fights yet. Export one from a Dojo fight, or paste a fight code above."
-            : $"{listing.Entries.Count} saved fight{(listing.Entries.Count == 1 ? "" : "s")}";
-        if (listing.UnreadableFiles > 0)
+        RebuildRows();
+    }
+
+    public void SetSearch(string? search)
+    {
+        _search = search ?? string.Empty;
+        RebuildRows();
+    }
+
+    public void SetCharacterFilter(ModelId? characterId)
+    {
+        _characterFilter = characterId;
+        RebuildRows();
+    }
+
+    public void SetAscensionFilter(int? ascension)
+    {
+        _ascensionFilter = ascension;
+        RebuildRows();
+    }
+
+    public void ResetFilters()
+    {
+        _search = string.Empty;
+        _characterFilter = null;
+        _ascensionFilter = null;
+        RebuildRows();
+    }
+
+    /// <summary>Rebuilds the visible rows from the cached library under the current filters, updating the
+    /// status line. Cheap enough to run on every filter keystroke since it never touches disk.</summary>
+    private void RebuildRows()
+    {
+        ClearRows();
+
+        int shown = 0;
+        foreach (LoadedEntry loaded in _entries)
         {
-            summary += $" · {listing.UnreadableFiles} unreadable file{(listing.UnreadableFiles == 1 ? "" : "s")} skipped";
+            if (!Matches(loaded))
+            {
+                continue;
+            }
+            _rowContainer.AddChild(BuildRow(loaded.Entry));
+            shown++;
+        }
+
+        string summary;
+        if (_entries.Count == 0)
+        {
+            summary = "No saved fights yet. Export one from a Dojo fight, or paste a fight code above.";
+        }
+        else if (shown == _entries.Count)
+        {
+            summary = $"{_entries.Count} saved fight{(_entries.Count == 1 ? "" : "s")}";
+        }
+        else
+        {
+            summary = $"{shown} of {_entries.Count} saved fights match";
+        }
+        if (_unreadableFiles > 0)
+        {
+            summary += $" · {_unreadableFiles} unreadable file{(_unreadableFiles == 1 ? "" : "s")} skipped";
         }
         SetStatus(summary, isError: false);
+    }
+
+    private void ClearRows()
+    {
+        _highlightedPanel = null; // rows are about to be freed; re-established by BuildRow if still visible
+        foreach (Node child in _rowContainer.GetChildren())
+        {
+            _rowContainer.RemoveChild(child);
+            child.QueueFreeSafely();
+        }
+        _scroll.ScrollVertical = 0;
+    }
+
+    private bool Matches(LoadedEntry loaded)
+    {
+        SharedFightPayload payload = loaded.Entry.Payload;
+        if (_characterFilter != null && payload.CharacterId != _characterFilter)
+        {
+            return false;
+        }
+        if (_ascensionFilter != null && payload.Ascension != _ascensionFilter)
+        {
+            return false;
+        }
+        string query = _search.Trim().ToLowerInvariant();
+        return query.Length == 0 || loaded.Haystack.Contains(query);
+    }
+
+    /// <summary>The lowercased searchable text for one fight — character/enemy/relic names plus title,
+    /// comment and seed (matching the run browser's search surface). Precomputed at load time so a
+    /// per-keystroke filter never re-resolves display names.</summary>
+    private static string BuildHaystack(SharedFightPayload payload)
+    {
+        var text = new System.Text.StringBuilder();
+        if (payload.CharacterId != null)
+        {
+            text.Append(DojoDisplayNames.Character(payload.CharacterId)).Append(' ');
+        }
+        if (payload.EncounterId != null)
+        {
+            text.Append(DojoDisplayNames.Encounter(payload.EncounterId)).Append(' ');
+        }
+        foreach (SerializableRelic relic in payload.Relics)
+        {
+            if (relic?.Id != null)
+            {
+                text.Append(DojoDisplayNames.Relic(relic.Id)).Append(' ');
+            }
+        }
+        text.Append(payload.Title).Append(' ').Append(payload.Comment).Append(' ').Append(payload.Seed);
+        return text.ToString().ToLowerInvariant();
     }
 
     private void Submit()

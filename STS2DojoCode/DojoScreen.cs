@@ -66,6 +66,8 @@ public partial class NDojoScreen : NSubmenu
     private readonly List<DojoChip> _victoryChips = new();
     private readonly List<DojoChip> _sortChips = new();
     private readonly List<DojoChip> _modeChips = new();
+    private readonly List<DojoChip> _savedCharacterChips = new();
+    private readonly List<DojoChip> _savedAscensionChips = new();
 
     private LineEdit _searchBox = null!;
     private ScrollContainer _scroll = null!;
@@ -74,6 +76,9 @@ public partial class NDojoScreen : NSubmenu
     private DojoBackChip _backChip = null!;
     private Godot.Timer _searchDebounce = null!;
     private VBoxContainer _runsFilterSection = null!;
+    private VBoxContainer _savedFightsFilterSection = null!;
+    private LineEdit _savedSearchBox = null!;
+    private Godot.Timer _savedSearchDebounce = null!;
     private HBoxContainer _runsHeader = null!;
     private DojoSavedFightsView _savedFightsView = null!;
     private bool _savedFightsMode;
@@ -306,6 +311,10 @@ public partial class NDojoScreen : NSubmenu
         resetChip.Released += _ => ResetFilters();
         filters.AddChild(resetChip);
 
+        // The Saved Fights sidebar filters — same widgets/placement as the runs section above, minus the
+        // victory filter (a saved fight has no win/loss); hidden until Saved Fights mode.
+        BuildSavedFightsFilters(stack);
+
         var filler = new Control();
         filler.SizeFlagsVertical = SizeFlags.ExpandFill;
         stack.AddChild(filler);
@@ -316,6 +325,84 @@ public partial class NDojoScreen : NSubmenu
         stack.AddChild(_backChip);
 
         return sidebar;
+    }
+
+    /// <summary>Builds the Saved Fights sidebar filter section: a search box (character/enemy/relic) plus
+    /// character and ascension chip grids, wired to <see cref="_savedFightsView"/>. Deliberately mirrors
+    /// the runs section's widgets and styling so the two modes look identical (minus victory/sort, which
+    /// don't apply to a saved fight). <see cref="_savedFightsView"/> is created after this in BuildMainArea,
+    /// but the chip closures capture the field and only fire on user input, by which point it is set.</summary>
+    private void BuildSavedFightsFilters(VBoxContainer stack)
+    {
+        _savedFightsFilterSection = new VBoxContainer();
+        _savedFightsFilterSection.AddThemeConstantOverride("separation", 10);
+        _savedFightsFilterSection.Visible = false; // Run History is the default mode
+        stack.AddChild(_savedFightsFilterSection);
+        VBoxContainer filters = _savedFightsFilterSection;
+
+        _savedSearchBox = new LineEdit();
+        _savedSearchBox.PlaceholderText = "Search character, enemy, relic...";
+        _savedSearchBox.ClearButtonEnabled = true;
+        _savedSearchBox.CustomMinimumSize = new Vector2(0, 46);
+        _savedSearchBox.AddThemeStyleboxOverride("normal", MakePanelStyle(new Color("10131A"), RowBorderColor, 8));
+        _savedSearchBox.AddThemeStyleboxOverride("focus", MakePanelStyle(new Color("10131A"), StsColors.gold, 8));
+        _savedSearchBox.AddThemeColorOverride("font_color", StsColors.cream);
+        _savedSearchBox.AddThemeColorOverride("font_placeholder_color", FaintText);
+        _savedSearchBox.AddThemeFontSizeOverride("font_size", 16);
+        if (DojoUi.UiFont is { } uiFont)
+        {
+            _savedSearchBox.AddThemeFontOverride("font", uiFont);
+        }
+        _savedSearchDebounce = new Godot.Timer { WaitTime = 0.18, OneShot = true };
+        _savedSearchDebounce.Timeout += () => _savedFightsView?.SetSearch(_savedSearchBox.Text);
+        AddChild(_savedSearchDebounce);
+        _savedSearchBox.TextChanged += _ => _savedSearchDebounce.Start();
+        filters.AddChild(_savedSearchBox);
+        filters.AddChild(MakeSpacer(8));
+
+        filters.AddChild(DojoUi.MakeLabel("Character", 19, StsColors.cream));
+        var characterGrid = new HFlowContainer();
+        characterGrid.AddThemeConstantOverride("h_separation", 8);
+        characterGrid.AddThemeConstantOverride("v_separation", 8);
+        filters.AddChild(characterGrid);
+        DojoChip allCharacterChip = DojoUi.MakeChip("All", compact: true);
+        allCharacterChip.CustomMinimumSize = new Vector2(allCharacterChip.CustomMinimumSize.X, 52);
+        AddFilterChip(characterGrid, _savedCharacterChips, allCharacterChip, selected: true,
+            () => _savedFightsView?.SetCharacterFilter(null));
+        foreach (CharacterModel character in SafeAllCharacters())
+        {
+            ModelId id = character.Id;
+            AddCharacterFilterChip(characterGrid, _savedCharacterChips, id, selected: false,
+                () => _savedFightsView?.SetCharacterFilter(id));
+        }
+        filters.AddChild(MakeSpacer(8));
+
+        filters.AddChild(DojoUi.MakeLabel("Ascension", 19, StsColors.cream));
+        var ascensionGrid = new HFlowContainer();
+        ascensionGrid.AddThemeConstantOverride("h_separation", 8);
+        ascensionGrid.AddThemeConstantOverride("v_separation", 8);
+        filters.AddChild(ascensionGrid);
+        AddFilterChip(ascensionGrid, _savedAscensionChips, "All", selected: true,
+            () => _savedFightsView?.SetAscensionFilter(null));
+        for (int ascension = 0; ascension <= 10; ascension++)
+        {
+            int value = ascension;
+            AddFilterChip(ascensionGrid, _savedAscensionChips, value.ToString(), selected: false,
+                () => _savedFightsView?.SetAscensionFilter(value));
+        }
+        filters.AddChild(MakeSpacer(12));
+
+        var resetChip = DojoUi.MakeChip("Reset Filters", compact: false);
+        resetChip.Released += _ => ResetSavedFightsFilters();
+        filters.AddChild(resetChip);
+    }
+
+    private void ResetSavedFightsFilters()
+    {
+        _savedSearchBox.Text = string.Empty;
+        SelectFirst(_savedCharacterChips);
+        SelectFirst(_savedAscensionChips);
+        _savedFightsView?.ResetFilters();
     }
 
     private Control BuildMainArea()
@@ -364,12 +451,14 @@ public partial class NDojoScreen : NSubmenu
         return main;
     }
 
-    /// <summary>Run History ↔ Saved Fights (§12g). One screen, two main-column halves; the sidebar's
-    /// run filters hide in Saved Fights mode since they don't apply to that (v1-unfiltered) list.</summary>
+    /// <summary>Run History ↔ Saved Fights (§12g). One screen, two main-column halves; each mode shows its
+    /// own sidebar filter section (the runs section carries the victory filter and sort; the Saved Fights
+    /// section is search + character + ascension only).</summary>
     private void SetMode(bool savedFights)
     {
         _savedFightsMode = savedFights;
         _runsFilterSection.Visible = !savedFights;
+        _savedFightsFilterSection.Visible = savedFights;
         _runsHeader.Visible = !savedFights;
         _statusLabel.Visible = !savedFights;
         _scroll.Visible = !savedFights;
@@ -378,6 +467,28 @@ public partial class NDojoScreen : NSubmenu
         {
             _savedFightsView.Refresh();
         }
+    }
+
+    /// <summary>Switches the (already-open) Dojo screen to the Saved Fights tab — used when the player saves
+    /// a fight from the Replay Setup modal so they land where the new entry now lives, instead of back on
+    /// the Run History list.</summary>
+    public static void ShowSavedFightsTab()
+    {
+        if (_instance != null && GodotObject.IsInstanceValid(_instance))
+        {
+            _instance.SwitchToSavedFightsTab();
+        }
+    }
+
+    private void SwitchToSavedFightsTab()
+    {
+        // Reflect the switch in the mode chips (index 1 = Saved Fights, per BuildSidebar) so the toggle
+        // isn't left visually pointing at Run History, then flip the mode.
+        for (int i = 0; i < _modeChips.Count; i++)
+        {
+            _modeChips[i].Selected = i == 1;
+        }
+        SetMode(savedFights: true);
     }
 
     private void AddFilterChip(Control parent, List<DojoChip> group, string text, bool selected, Action apply)
