@@ -48,7 +48,20 @@ public static class DojoRunListQueries
         DojoRunSortOrder sort,
         Func<ModelId, string> resolveName)
     {
-        IEnumerable<DojoRunSummary> result = runs.Where(run => Matches(run, filter, resolveName));
+        var resolvedNames = new Dictionary<ModelId, string>();
+        string ResolveCached(ModelId id)
+        {
+            if (resolvedNames.TryGetValue(id, out string? name))
+            {
+                return name;
+            }
+
+            name = resolveName(id);
+            resolvedNames[id] = name;
+            return name;
+        }
+
+        IEnumerable<DojoRunSummary> result = runs.Where(run => Matches(run, filter, ResolveCached));
         return Sort(result, sort);
     }
 

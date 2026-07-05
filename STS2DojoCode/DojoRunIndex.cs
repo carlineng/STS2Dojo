@@ -3,7 +3,9 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
 using Godot;
+using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Multiplayer.Serialization;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Saves;
@@ -37,6 +39,8 @@ public sealed class DojoRunIndexResult
 /// </summary>
 public static class DojoRunIndex
 {
+    private const int EligibilitySaveDebounceMs = 500;
+
     private sealed record CacheEntry(
         DojoRunFileFingerprint Fingerprint,
         RunHistoryFileDecision Decision,
@@ -46,6 +50,10 @@ public static class DojoRunIndex
         string? EligibilityContentHash);
 
     private static readonly Dictionary<string, CacheEntry> Cache = new();
+    private static readonly object EligibilitySaveLock = new();
+    private static readonly Dictionary<string, DojoRunIndexCacheEntry> PendingEligibilityCacheEntries = new();
+    private static bool EligibilitySaveScheduled;
+    private static string? EligibilitySaveCachePath;
 
     public static string? TryGetCachePath()
     {
@@ -328,31 +336,101 @@ public static class DojoRunIndex
             }
 
             Cache.TryGetValue(summary.FilePath, out CacheEntry? cachedEntry);
+            int? runSchemaVersion = cachedEntry?.RunSchemaVersion;
+            string? buildId = cachedEntry?.BuildId;
             Cache[summary.FilePath] = new CacheEntry(
                 fingerprint,
                 RunHistoryFileDecision.Include,
                 summary,
-                cachedEntry?.RunSchemaVersion,
-                cachedEntry?.BuildId,
+                runSchemaVersion,
+                buildId,
                 eligibilityContentHash);
 
             string? cachePath = TryGetCachePath();
-            DojoRunIndexCacheDocument diskCache = DojoRunIndexCache.Load(
-                cachePath, message => MainFile.Logger.Info(message));
-            DojoRunIndexCache.Upsert(diskCache,
-                DojoRunIndexCache.FromResult(
-                    fingerprint,
-                    RunHistoryFileDecision.Include,
-                    null,
-                    summary,
-                    eligibilityContentHash,
-                    cachedEntry?.RunSchemaVersion,
-                    cachedEntry?.BuildId));
-            DojoRunIndexCache.SaveAtomic(cachePath, diskCache, message => MainFile.Logger.Info(message));
+            QueueEligibilityCacheSave(cachePath, DojoRunIndexCache.FromResult(
+                fingerprint,
+                RunHistoryFileDecision.Include,
+                null,
+                summary,
+                eligibilityContentHash,
+                runSchemaVersion,
+                buildId));
         }
         catch (Exception e)
         {
             MainFile.Logger.Info("[STS2Dojo] Could not persist Dojo fight eligibility: " + e.Message);
+        }
+    }
+
+    private static void QueueEligibilityCacheSave(string? cachePath, DojoRunIndexCacheEntry entry)
+    {
+        if (string.IsNullOrWhiteSpace(cachePath))
+        {
+            return;
+        }
+
+        lock (EligibilitySaveLock)
+        {
+            PendingEligibilityCacheEntries[entry.FilePath] = entry;
+            EligibilitySaveCachePath = cachePath;
+            if (EligibilitySaveScheduled)
+            {
+                return;
+            }
+
+            EligibilitySaveScheduled = true;
+        }
+
+        TaskHelper.RunSafely(FlushEligibilityCacheSavesAsync());
+    }
+
+    private static async Task FlushEligibilityCacheSavesAsync()
+    {
+        while (true)
+        {
+            await Task.Delay(EligibilitySaveDebounceMs);
+
+            Dictionary<string, DojoRunIndexCacheEntry> pending;
+            string? cachePath;
+            lock (EligibilitySaveLock)
+            {
+                pending = new Dictionary<string, DojoRunIndexCacheEntry>(PendingEligibilityCacheEntries);
+                PendingEligibilityCacheEntries.Clear();
+                cachePath = EligibilitySaveCachePath;
+                EligibilitySaveCachePath = null;
+            }
+
+            if (pending.Count > 0 && !string.IsNullOrWhiteSpace(cachePath))
+            {
+                try
+                {
+                    DojoRunIndexCacheDocument diskCache = DojoRunIndexCache.Load(
+                        cachePath, message => MainFile.Logger.Info(message));
+                    bool changed = false;
+                    foreach (DojoRunIndexCacheEntry entry in pending.Values)
+                    {
+                        changed |= DojoRunIndexCache.Upsert(diskCache, entry);
+                    }
+
+                    if (changed)
+                    {
+                        DojoRunIndexCache.SaveAtomic(cachePath, diskCache, message => MainFile.Logger.Info(message));
+                    }
+                }
+                catch (Exception e)
+                {
+                    MainFile.Logger.Info("[STS2Dojo] Could not flush Dojo fight eligibility cache: " + e.Message);
+                }
+            }
+
+            lock (EligibilitySaveLock)
+            {
+                if (PendingEligibilityCacheEntries.Count == 0)
+                {
+                    EligibilitySaveScheduled = false;
+                    return;
+                }
+            }
         }
     }
 

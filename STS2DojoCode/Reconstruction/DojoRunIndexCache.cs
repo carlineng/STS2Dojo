@@ -495,7 +495,119 @@ public static class DojoRunIndexCache
         && entry.SizeBytes == fingerprint.SizeBytes;
 
     private static bool AreEquivalent(DojoRunIndexCacheEntry left, DojoRunIndexCacheEntry right) =>
-        JsonSerializer.Serialize(left, JsonOptions) == JsonSerializer.Serialize(right, JsonOptions);
+        left.CacheSchemaVersion == right.CacheSchemaVersion
+        && string.Equals(left.FilePath, right.FilePath, StringComparison.Ordinal)
+        && string.Equals(left.FileName, right.FileName, StringComparison.Ordinal)
+        && left.LastWriteUtcTicks == right.LastWriteUtcTicks
+        && left.SizeBytes == right.SizeBytes
+        && left.RunSchemaVersion == right.RunSchemaVersion
+        && string.Equals(left.BuildId, right.BuildId, StringComparison.Ordinal)
+        && left.Decision == right.Decision
+        && string.Equals(left.EligibilityContentHash, right.EligibilityContentHash, StringComparison.Ordinal)
+        && AreDictionariesEquivalent(left.FightEligibility, right.FightEligibility)
+        && AreSummariesEquivalent(left.Summary, right.Summary);
+
+    private static bool AreSummariesEquivalent(CachedDojoRunSummary? left, CachedDojoRunSummary? right)
+    {
+        if (ReferenceEquals(left, right))
+        {
+            return true;
+        }
+        if (left == null || right == null)
+        {
+            return false;
+        }
+
+        return string.Equals(left.FilePath, right.FilePath, StringComparison.Ordinal)
+            && string.Equals(left.CharacterId, right.CharacterId, StringComparison.Ordinal)
+            && left.Ascension == right.Ascension
+            && left.Win == right.Win
+            && left.WasAbandoned == right.WasAbandoned
+            && left.FloorsReached == right.FloorsReached
+            && left.EndHp == right.EndHp
+            && left.EndMaxHp == right.EndMaxHp
+            && left.StartTime == right.StartTime
+            && Math.Abs(left.RunTimeSeconds - right.RunTimeSeconds) < float.Epsilon
+            && string.Equals(left.Seed, right.Seed, StringComparison.Ordinal)
+            && string.Equals(left.KilledByEncounterId, right.KilledByEncounterId, StringComparison.Ordinal)
+            && string.Equals(left.KilledByEventId, right.KilledByEventId, StringComparison.Ordinal)
+            && left.DeckCount == right.DeckCount
+            && left.RelicCount == right.RelicCount
+            && left.RelicIds.SequenceEqual(right.RelicIds)
+            && AreActsEquivalent(left.Acts, right.Acts);
+    }
+
+    private static bool AreActsEquivalent(
+        IReadOnlyList<CachedDojoActSummary> left,
+        IReadOnlyList<CachedDojoActSummary> right)
+    {
+        if (left.Count != right.Count)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < left.Count; i++)
+        {
+            CachedDojoActSummary leftAct = left[i];
+            CachedDojoActSummary rightAct = right[i];
+            if (leftAct.ActIndex != rightAct.ActIndex
+                || !string.Equals(leftAct.ActId, rightAct.ActId, StringComparison.Ordinal)
+                || !AreFightsEquivalent(leftAct.Bosses, rightAct.Bosses)
+                || !AreFightsEquivalent(leftAct.Elites, rightAct.Elites)
+                || !AreFightsEquivalent(leftAct.OtherDeathFights, rightAct.OtherDeathFights))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool AreFightsEquivalent(
+        IReadOnlyList<CachedDojoFightSummary> left,
+        IReadOnlyList<CachedDojoFightSummary> right)
+    {
+        if (left.Count != right.Count)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < left.Count; i++)
+        {
+            CachedDojoFightSummary leftFight = left[i];
+            CachedDojoFightSummary rightFight = right[i];
+            if (leftFight.GlobalFloor != rightFight.GlobalFloor
+                || !string.Equals(leftFight.EncounterId, rightFight.EncounterId, StringComparison.Ordinal)
+                || !string.Equals(leftFight.RoomType, rightFight.RoomType, StringComparison.Ordinal)
+                || !string.Equals(leftFight.DisplayId, rightFight.DisplayId, StringComparison.Ordinal)
+                || leftFight.WasDeathFight != rightFight.WasDeathFight)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool AreDictionariesEquivalent(
+        IReadOnlyDictionary<int, bool> left,
+        IReadOnlyDictionary<int, bool> right)
+    {
+        if (left.Count != right.Count)
+        {
+            return false;
+        }
+
+        foreach ((int floor, bool eligible) in left)
+        {
+            if (!right.TryGetValue(floor, out bool rightEligible) || rightEligible != eligible)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
 
     private static string CacheKey(string filePath)
     {

@@ -50,6 +50,7 @@ public partial class NDojoScreen : NSubmenu
 {
     private const float SidebarWidth = 380f;
     private const int RowBatchSize = 12;
+    private const int RowsPerFrame = 1;
     private const float ScrollLoadMargin = 900f;
 
     private static readonly Color BackdropColor = new(0.03f, 0.035f, 0.045f, 0.88f);
@@ -92,6 +93,8 @@ public partial class NDojoScreen : NSubmenu
     private List<DojoRunSummary> _visibleRuns = new();
     private int _rowsBuilt;
     private bool _loading;
+    private bool _buildingRows;
+    private int _listGeneration;
 
     protected override Control? InitialFocusedControl => _searchBox;
 
@@ -625,10 +628,12 @@ public partial class NDojoScreen : NSubmenu
             child.QueueFreeSafely();
         }
         _rowsBuilt = 0;
+        _buildingRows = false;
+        _listGeneration++;
         _scroll.ScrollVertical = 0;
 
         UpdateStatusLabel();
-        BuildMoreRows();
+        StartBuildMoreRows();
     }
 
     private void UpdateStatusLabel()
@@ -658,27 +663,68 @@ public partial class NDojoScreen : NSubmenu
 
     private void MaybeBuildMoreRows()
     {
-        if (_rowsBuilt >= _visibleRuns.Count)
+        if (_buildingRows || !ShouldBuildMoreRows())
         {
             return;
         }
 
-        VScrollBar bar = _scroll.GetVScrollBar();
-        if (bar.Value + bar.Page >= bar.MaxValue - ScrollLoadMargin)
-        {
-            BuildMoreRows();
-        }
+        StartBuildMoreRows();
     }
 
-    private void BuildMoreRows()
+    private bool ShouldBuildMoreRows()
     {
-        int end = Math.Min(_rowsBuilt + RowBatchSize, _visibleRuns.Count);
-        for (int i = _rowsBuilt; i < end; i++)
+        if (_rowsBuilt >= _visibleRuns.Count)
         {
-            DojoRunRow row = new DojoRunRow().Init(_visibleRuns[i]);
-            _rowContainer.AddChild(row.Root);
+            return false;
         }
-        _rowsBuilt = end;
+
+        VScrollBar bar = _scroll.GetVScrollBar();
+        return bar.Value + bar.Page >= bar.MaxValue - ScrollLoadMargin;
+    }
+
+    private void StartBuildMoreRows()
+    {
+        if (_buildingRows || _rowsBuilt >= _visibleRuns.Count || !IsInsideTree())
+        {
+            return;
+        }
+
+        _buildingRows = true;
+        TaskHelper.RunSafely(BuildMoreRowsAsync(_listGeneration));
+    }
+
+    private async Task BuildMoreRowsAsync(int generation)
+    {
+        try
+        {
+            int target = Math.Min(_rowsBuilt + RowBatchSize, _visibleRuns.Count);
+            while (generation == _listGeneration && _rowsBuilt < target && IsInsideTree())
+            {
+                int frameEnd = Math.Min(_rowsBuilt + RowsPerFrame, target);
+                for (int i = _rowsBuilt; i < frameEnd; i++)
+                {
+                    DojoRunRow row = new DojoRunRow().Init(_visibleRuns[i]);
+                    _rowContainer.AddChild(row.Root);
+                }
+
+                _rowsBuilt = frameEnd;
+                if (_rowsBuilt < target)
+                {
+                    await this.AwaitProcessFrame();
+                }
+            }
+        }
+        finally
+        {
+            if (generation == _listGeneration)
+            {
+                _buildingRows = false;
+                if (ShouldBuildMoreRows())
+                {
+                    StartBuildMoreRows();
+                }
+            }
+        }
     }
 }
 
