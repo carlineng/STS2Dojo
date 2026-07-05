@@ -341,7 +341,7 @@ public partial class NDojoScreen : NSubmenu
         VBoxContainer filters = _savedFightsFilterSection;
 
         _savedSearchBox = new LineEdit();
-        _savedSearchBox.PlaceholderText = "Search character, enemy, relic...";
+        _savedSearchBox.PlaceholderText = "Search title, description, character, enemy, relic...";
         _savedSearchBox.ClearButtonEnabled = true;
         _savedSearchBox.CustomMinimumSize = new Vector2(0, 46);
         _savedSearchBox.AddThemeStyleboxOverride("normal", MakePanelStyle(new Color("10131A"), RowBorderColor, 8));
