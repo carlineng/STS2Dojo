@@ -12,8 +12,8 @@ using MegaCrit.Sts2.Core.Multiplayer.Game;
 using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Nodes.Audio;
 using MegaCrit.Sts2.Core.Runs;
-using MegaCrit.Sts2.Core.Saves;
 using MegaCrit.Sts2.Core.Unlocks;
+using STS2Dojo.STS2DojoCode.SeedSharing;
 
 namespace STS2Dojo.STS2DojoCode;
 
@@ -34,25 +34,41 @@ namespace STS2Dojo.STS2DojoCode;
 public static class DojoLaunch
 {
     private sealed record LaunchRequest(
-        NGame Game, CharacterModel Character, int AscensionLevel, ModelId EncounterId, Action<RunState> Mutate);
+        NGame Game, CharacterModel Character, int AscensionLevel, ModelId EncounterId, Action<RunState> Mutate,
+        DojoLaunchOptions Options);
 
     private static LaunchRequest? _lastRequest;
+
+    /// <summary>RNG+loadout snapshot of the attempt currently (or most recently) being played, refreshed
+    /// on every real launch INCLUDING Try Again relaunches — each attempt has its own seed, so the
+    /// Completion screen's Export must always package the snapshot of the attempt that just concluded,
+    /// never a stale earlier one (CLAUDE.md §12a entry points 1/3). Prepare-only captures (entry point 2)
+    /// deliberately do NOT touch this.</summary>
+    public static DojoFightSnapshot? LastSnapshot { get; private set; }
 
     /// <summary>Launches a fresh throwaway, non-saving run and jumps straight into the given encounter.
     /// <paramref name="mutate"/> replaces the player's deck/relics/HP/gold; it runs after the run's
     /// synthetic starting inventory + starting-relic <c>AfterObtained()</c> hooks have fired, but before
-    /// the run's scene is created — see the class docs for why that ordering is load-bearing.</summary>
+    /// the run's scene is created — see the class docs for why that ordering is load-bearing.
+    /// <paramref name="options"/> (null = defaults) carries the §12 seed override + RNG-counter restore
+    /// for imported shared fights; it is retained in the request so Try Again replays the same seed.</summary>
     public static async Task<RunState> LaunchThrowawayRun(
-        NGame game, CharacterModel character, int ascensionLevel, ModelId encounterId, Action<RunState> mutate)
+        NGame game, CharacterModel character, int ascensionLevel, ModelId encounterId, Action<RunState> mutate,
+        DojoLaunchOptions? options = null)
     {
-        _lastRequest = new LaunchRequest(game, character, ascensionLevel, encounterId, mutate);
-        return await LaunchInternal(game, character, ascensionLevel, encounterId, mutate);
+        options ??= DojoLaunchOptions.Default;
+        _lastRequest = new LaunchRequest(game, character, ascensionLevel, encounterId, mutate, options);
+        (RunState runState, _) = await LaunchInternal(
+            game, character, ascensionLevel, encounterId, mutate, options, enterScene: true);
+        return runState;
     }
 
-    /// <summary>"Try again": relaunches the last <c>LaunchThrowawayRun</c> request with a fresh encounter
-    /// RNG seed and fresh combat RNG (CLAUDE.md §3 — exact RNG replay is impossible; fresh is the
-    /// deliberate design). Follows the same pattern as <c>Debug/FileDropHandler.cs</c>'s "load a different
-    /// run without returning to the main menu": <c>RunManager.CleanUp()</c> then relaunch directly.</summary>
+    /// <summary>"Try again": relaunches the last <c>LaunchThrowawayRun</c> request. For a normal Dojo
+    /// fight (no seed override) that means a fresh seed and fresh combat RNG per attempt (CLAUDE.md §3);
+    /// for a seed-captured/imported fight the retained options replay the identical seed+counters every
+    /// attempt (§12 decision 2026-07-04). Follows the same pattern as <c>Debug/FileDropHandler.cs</c>'s
+    /// "load a different run without returning to the main menu": <c>RunManager.CleanUp()</c> then
+    /// relaunch directly.</summary>
     public static async Task<RunState?> TryAgain()
     {
         if (_lastRequest is not { } request)
@@ -61,31 +77,73 @@ public static class DojoLaunch
             return null;
         }
 
-        return await LaunchInternal(
-            request.Game, request.Character, request.AscensionLevel, request.EncounterId, request.Mutate);
+        (RunState runState, _) = await LaunchInternal(
+            request.Game, request.Character, request.AscensionLevel, request.EncounterId, request.Mutate,
+            request.Options, enterScene: true);
+        return runState;
     }
 
-    private static async Task<RunState> LaunchInternal(
-        NGame game, CharacterModel character, int ascensionLevel, ModelId encounterId, Action<RunState> mutate)
+    /// <summary>Runs the full launch sequence through the mutate callback and snapshot capture, then
+    /// tears down WITHOUT ever creating the run scene or entering combat — §12a entry point 2, the
+    /// Replay Setup modal's "Export" without playing. Sequence-identical to a real launch up to the
+    /// capture point (asset preloads and <c>FinalizeStartingRelics</c> included — the §12a parity
+    /// requirement, so an entry-point-2 export equals an entry-point-1 export of the same setup) except
+    /// for the music stops and <c>RunManager.Launch()</c>, which touch no run/player/RNG state.
+    /// Does not update <see cref="LastSnapshot"/> or the Try Again request.</summary>
+    public static async Task<DojoFightSnapshot> PrepareSnapshot(
+        NGame game, CharacterModel character, int ascensionLevel, ModelId encounterId, Action<RunState> mutate,
+        DojoLaunchOptions? options = null)
     {
-        // Match the base game's run-start behavior (main-menu/custom/daily flows all stop menu music before
-        // launching) and also clear any lingering end-of-combat sting that might still be playing when the
-        // player hits Try Again from the completion screen. Run music and global music are managed by
-        // separate systems, so stop both to guarantee the new fight starts with a single active track.
-        NRun.Instance?.RunMusicController.StopMusic();
-        NAudioManager.Instance?.StopMusic();
+        if (RunManager.Instance.IsInProgress)
+        {
+            // A real launch tears down the in-progress run on purpose (Try Again); a snapshot capture
+            // must never kill a live fight as a side effect.
+            throw new InvalidOperationException("Cannot capture a fight snapshot while a run is in progress.");
+        }
+
+        (_, DojoFightSnapshot snapshot) = await LaunchInternal(
+            game, character, ascensionLevel, encounterId, mutate, options ?? DojoLaunchOptions.Default,
+            enterScene: false);
+        return snapshot;
+    }
+
+    private static async Task<(RunState RunState, DojoFightSnapshot Snapshot)> LaunchInternal(
+        NGame game, CharacterModel character, int ascensionLevel, ModelId encounterId, Action<RunState> mutate,
+        DojoLaunchOptions options, bool enterScene)
+    {
+        if (enterScene)
+        {
+            // Match the base game's run-start behavior (main-menu/custom/daily flows all stop menu music
+            // before launching) and also clear any lingering end-of-combat sting that might still be playing
+            // when the player hits Try Again from the completion screen. Run music and global music are
+            // managed by separate systems, so stop both to guarantee the new fight starts with a single
+            // active track. Prepare-only captures never leave the current screen, so they leave music alone.
+            NRun.Instance?.RunMusicController.StopMusic();
+            NAudioManager.Instance?.StopMusic();
+        }
 
         if (RunManager.Instance.IsInProgress)
         {
             RunManager.Instance.CleanUp();
         }
 
-        // Fresh EncounterModel + fresh RNG every attempt, including on TryAgain() — CLAUDE.md §3.
+        // Fresh EncounterModel every attempt. Deliberately NOT calling encounter.DebugRandomizeRng() (the
+        // pre-§12 behavior, copied from the built-in `fight` command): that seeds the encounter's private
+        // monster-composition RNG from wall-clock time, which no shared-fight payload could ever reproduce.
+        // Left null, GenerateMonstersWithSlots derives that RNG from the run seed instead
+        // (EncounterModel.cs — runState.Rng.Seed + TotalFloor + hash(encounterId)), so composition is
+        // seed-repeatable for captured fights while normal fights stay fresh per attempt via the fresh
+        // per-attempt seed below. CLAUDE.md §12a determinism gap 1.
         EncounterModel encounter = ModelDb.GetById<EncounterModel>(encounterId).ToMutable();
-        encounter.DebugRandomizeRng();
 
-        string seed = SeedHelper.GetRandomSeed();
-        UnlockState unlockState = SaveManager.Instance.GenerateUnlockStateFromProgress();
+        string seed = options.SeedOverride ?? SeedHelper.GetRandomSeed();
+
+        // UnlockState.all, not GenerateUnlockStateFromProgress(): in-combat random card generation
+        // (Discovery etc.) filters its candidate pool by the player's unlock progress, so two users with
+        // the same seed but different unlocks would generate different cards — CLAUDE.md §12a determinism
+        // gap 2. Fully-unlocked pools make every Dojo fight reproducible for every player; the throwaway
+        // run never saves, so nothing leaks to real progress.
+        UnlockState unlockState = UnlockState.all;
         RunState runState = RunState.CreateForNewRun(
             new List<Player> { Player.CreateForNewRun(character, unlockState, netId: 1uL) },
             ActModel.GetDefaultList().Select(a => a.ToMutable()).ToList(),
@@ -118,6 +176,29 @@ public static class DojoLaunch
 
             DojoRunRegistry.MarkAsDojo(runState);
 
+            DojoFightSnapshot snapshot;
+            if (!enterScene)
+            {
+                // Prepare-only (§12a entry point 2): NO asset preloads and NO NetLoadingHandle. The async
+                // asset-loading session pops the game's loading overlay, which tears down the modal UI
+                // that initiated the capture (observed in-game 2026-07-04: the Replay Setup modal
+                // vanished back to the Dojo screen mid-export). No scene is ever created here, so the
+                // assets are never needed, and asset loading consumes no run/player/RNG state — capture
+                // parity with a real launch is unaffected. FinalizeStartingRelics IS kept: its
+                // AfterObtained effects are player state the mutate callback's reconstruction snapshot
+                // reads, identical to a real launch.
+                await RunManager.Instance.FinalizeStartingRelics();
+
+                mutate(runState);
+                RestoreRngCounters(options, runState);
+                snapshot = CaptureSnapshot(runState, character, ascensionLevel, encounterId, seed);
+
+                // The snapshot is what the caller wanted; tear the never-entered run back down — same
+                // call the failure path below uses.
+                RunManager.Instance.CleanUp();
+                return (runState, snapshot);
+            }
+
             using (new NetLoadingHandle(RunManager.Instance.NetService))
             {
                 await PreloadManager.LoadRunAssets(runState.Players.Select(p => p.Character));
@@ -126,12 +207,18 @@ public static class DojoLaunch
                 RunManager.Instance.Launch();
 
                 mutate(runState);
+                RestoreRngCounters(options, runState);
+
+                // The §12a capture point: post-mutate/post-restore, pre-scene, every combat stream still at
+                // its pre-combat counter. Captured on EVERY launch so any concluded fight can be exported.
+                snapshot = CaptureSnapshot(runState, character, ascensionLevel, encounterId, seed);
+                LastSnapshot = snapshot;
 
                 game.RootSceneContainer.SetCurrentScene(NRun.Create(runState));
             }
 
             await EnterEncounter(encounter);
-            return runState;
+            return (runState, snapshot);
         }
         catch
         {
@@ -150,6 +237,47 @@ public static class DojoLaunch
     public static async Task EnterEncounter(EncounterModel encounter)
     {
         await RunManager.Instance.EnterRoomDebug(encounter.RoomType, MapPointType.Unassigned, encounter);
+    }
+
+    /// <summary>Import path (§12e): reconcile the RNG streams to the exporter's exact captured counters.
+    /// Requires the run to have been constructed with the payload's seed string (SeedOverride) — both
+    /// LoadFromSerializable methods throw on a seed mismatch by design.</summary>
+    private static void RestoreRngCounters(DojoLaunchOptions options, RunState runState)
+    {
+        if (options.RunRngCounters != null)
+        {
+            runState.Rng.LoadFromSerializable(options.RunRngCounters);
+        }
+        if (options.PlayerRngCounters != null)
+        {
+            runState.Players[0].PlayerRng.LoadFromSerializable(options.PlayerRngCounters);
+        }
+    }
+
+    /// <summary>Reads the shareable-fight snapshot (CLAUDE.md §12b) off the live run state. Uses the same
+    /// <c>ToSerializable()</c> DTO path the game's own quit/resume save uses, so relic/card Props (incl.
+    /// Replay Setup adjustments already applied by the mutate callback) round-trip through the identical
+    /// SavedProperties pipeline on import.</summary>
+    private static DojoFightSnapshot CaptureSnapshot(
+        RunState runState, CharacterModel character, int ascensionLevel, ModelId encounterId, string seed)
+    {
+        Player player = runState.Players[0];
+        return new DojoFightSnapshot
+        {
+            Seed = seed,
+            RunRng = runState.Rng.ToSerializable(),
+            PlayerRng = player.PlayerRng.ToSerializable(),
+            CharacterId = character.Id,
+            Ascension = ascensionLevel,
+            EncounterId = encounterId,
+            Deck = player.Deck.Cards.Select(c => c.ToSerializable()).ToList(),
+            Relics = player.Relics.Select(r => r.ToSerializable()).ToList(),
+            Potions = player.Potions.Select(p => p.ToSerializable(player.GetPotionSlotIndex(p))).ToList(),
+            MaxPotionSlots = player.MaxPotionCount,
+            CurrentHp = player.Creature.CurrentHp,
+            MaxHp = player.Creature.MaxHp,
+            Gold = player.Gold,
+        };
     }
 
     /// <summary>Finds which registered <see cref="ActModel"/> variant actually owns

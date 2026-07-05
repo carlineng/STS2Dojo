@@ -65,6 +65,7 @@ public partial class NDojoScreen : NSubmenu
     private readonly List<DojoChip> _ascensionChips = new();
     private readonly List<DojoChip> _victoryChips = new();
     private readonly List<DojoChip> _sortChips = new();
+    private readonly List<DojoChip> _modeChips = new();
 
     private LineEdit _searchBox = null!;
     private ScrollContainer _scroll = null!;
@@ -72,6 +73,10 @@ public partial class NDojoScreen : NSubmenu
     private Label _statusLabel = null!;
     private DojoBackChip _backChip = null!;
     private Godot.Timer _searchDebounce = null!;
+    private VBoxContainer _runsFilterSection = null!;
+    private HBoxContainer _runsHeader = null!;
+    private DojoSavedFightsView _savedFightsView = null!;
+    private bool _savedFightsMode;
 
     private ModelId? _filterCharacter;
     private int? _filterAscension;
@@ -143,6 +148,12 @@ public partial class NDojoScreen : NSubmenu
     public override void OnSubmenuOpened()
     {
         TaskHelper.RunSafely(RefreshRunsAsync());
+        if (_savedFightsMode)
+        {
+            // e.g. returning from a Dojo fight exported via the Completion screen — the library may
+            // have gained an entry while this screen sat in the submenu stack.
+            _savedFightsView.Refresh();
+        }
     }
 
     public override void _Draw()
@@ -205,6 +216,21 @@ public partial class NDojoScreen : NSubmenu
         stack.AddChild(DojoUi.MakeLabel("Replay any past fight as practice", 15, MutedText));
         stack.AddChild(MakeSpacer(10));
 
+        // §12g mode toggle (UI-home decision 2026-07-04): Run History ↔ Saved Fights, one screen.
+        var modeRow = new HFlowContainer();
+        modeRow.AddThemeConstantOverride("h_separation", 8);
+        stack.AddChild(modeRow);
+        AddFilterChip(modeRow, _modeChips, "Run History", selected: true, () => SetMode(savedFights: false));
+        AddFilterChip(modeRow, _modeChips, "Saved Fights", selected: false, () => SetMode(savedFights: true));
+        stack.AddChild(MakeSpacer(6));
+
+        // Everything from the search box through Reset Filters only applies to the runs list — grouped
+        // so the Saved Fights mode can hide it wholesale (its list is unfiltered in v1).
+        _runsFilterSection = new VBoxContainer();
+        _runsFilterSection.AddThemeConstantOverride("separation", 10);
+        stack.AddChild(_runsFilterSection);
+        VBoxContainer filters = _runsFilterSection;
+
         _searchBox = new LineEdit();
         _searchBox.PlaceholderText = "Search character, boss, relic, seed...";
         _searchBox.ClearButtonEnabled = true;
@@ -227,15 +253,15 @@ public partial class NDojoScreen : NSubmenu
         _searchDebounce.Timeout += RebuildList;
         AddChild(_searchDebounce);
         _searchBox.TextChanged += _ => _searchDebounce.Start();
-        stack.AddChild(_searchBox);
-        stack.AddChild(MakeSpacer(8));
+        filters.AddChild(_searchBox);
+        filters.AddChild(MakeSpacer(8));
 
         // Character: All + every playable character in the loaded content.
-        stack.AddChild(DojoUi.MakeLabel("Character", 19, StsColors.cream));
+        filters.AddChild(DojoUi.MakeLabel("Character", 19, StsColors.cream));
         var characterGrid = new HFlowContainer();
         characterGrid.AddThemeConstantOverride("h_separation", 8);
         characterGrid.AddThemeConstantOverride("v_separation", 8);
-        stack.AddChild(characterGrid);
+        filters.AddChild(characterGrid);
         DojoChip allCharacterChip = DojoUi.MakeChip("All", compact: true);
         // Match the taller character-icon circles so the row stays aligned.
         allCharacterChip.CustomMinimumSize = new Vector2(allCharacterChip.CustomMinimumSize.X, 52);
@@ -247,13 +273,13 @@ public partial class NDojoScreen : NSubmenu
             AddCharacterFilterChip(characterGrid, _characterChips, id, selected: false,
                 () => { _filterCharacter = id; RebuildList(); });
         }
-        stack.AddChild(MakeSpacer(8));
+        filters.AddChild(MakeSpacer(8));
 
-        stack.AddChild(DojoUi.MakeLabel("Ascension", 19, StsColors.cream));
+        filters.AddChild(DojoUi.MakeLabel("Ascension", 19, StsColors.cream));
         var ascensionGrid = new HFlowContainer();
         ascensionGrid.AddThemeConstantOverride("h_separation", 8);
         ascensionGrid.AddThemeConstantOverride("v_separation", 8);
-        stack.AddChild(ascensionGrid);
+        filters.AddChild(ascensionGrid);
         AddFilterChip(ascensionGrid, _ascensionChips, "All", selected: true,
             () => { _filterAscension = null; RebuildList(); });
         for (int ascension = 0; ascension <= 10; ascension++)
@@ -262,23 +288,23 @@ public partial class NDojoScreen : NSubmenu
             AddFilterChip(ascensionGrid, _ascensionChips, value.ToString(), selected: false,
                 () => { _filterAscension = value; RebuildList(); });
         }
-        stack.AddChild(MakeSpacer(8));
+        filters.AddChild(MakeSpacer(8));
 
-        stack.AddChild(DojoUi.MakeLabel("Victory", 19, StsColors.cream));
+        filters.AddChild(DojoUi.MakeLabel("Victory", 19, StsColors.cream));
         var victoryRow = new HFlowContainer();
         victoryRow.AddThemeConstantOverride("h_separation", 8);
-        stack.AddChild(victoryRow);
+        filters.AddChild(victoryRow);
         AddFilterChip(victoryRow, _victoryChips, "Both", selected: true,
             () => { _filterVictory = DojoVictoryFilter.Both; RebuildList(); });
         AddFilterChip(victoryRow, _victoryChips, "Victory", selected: false,
             () => { _filterVictory = DojoVictoryFilter.Victory; RebuildList(); });
         AddFilterChip(victoryRow, _victoryChips, "Defeat", selected: false,
             () => { _filterVictory = DojoVictoryFilter.Defeat; RebuildList(); });
-        stack.AddChild(MakeSpacer(12));
+        filters.AddChild(MakeSpacer(12));
 
         var resetChip = DojoUi.MakeChip("Reset Filters", compact: false);
         resetChip.Released += _ => ResetFilters();
-        stack.AddChild(resetChip);
+        filters.AddChild(resetChip);
 
         var filler = new Control();
         filler.SizeFlagsVertical = SizeFlags.ExpandFill;
@@ -302,6 +328,7 @@ public partial class NDojoScreen : NSubmenu
         var header = new HBoxContainer();
         header.AddThemeConstantOverride("separation", 10);
         main.AddChild(header);
+        _runsHeader = header;
 
         header.AddChild(DojoUi.MakeLabel("Select a run", 26, StsColors.cream));
         var headerFiller = new Control();
@@ -329,7 +356,28 @@ public partial class NDojoScreen : NSubmenu
 
         _scroll.GetVScrollBar().ValueChanged += _ => MaybeBuildMoreRows();
 
+        // The Saved Fights half (§12g), sharing the main column; SetMode flips which half is visible.
+        _savedFightsView = new DojoSavedFightsView();
+        _savedFightsView.Root.Visible = false;
+        main.AddChild(_savedFightsView.Root);
+
         return main;
+    }
+
+    /// <summary>Run History ↔ Saved Fights (§12g). One screen, two main-column halves; the sidebar's
+    /// run filters hide in Saved Fights mode since they don't apply to that (v1-unfiltered) list.</summary>
+    private void SetMode(bool savedFights)
+    {
+        _savedFightsMode = savedFights;
+        _runsFilterSection.Visible = !savedFights;
+        _runsHeader.Visible = !savedFights;
+        _statusLabel.Visible = !savedFights;
+        _scroll.Visible = !savedFights;
+        _savedFightsView.Root.Visible = savedFights;
+        if (savedFights)
+        {
+            _savedFightsView.Refresh();
+        }
     }
 
     private void AddFilterChip(Control parent, List<DojoChip> group, string text, bool selected, Action apply)

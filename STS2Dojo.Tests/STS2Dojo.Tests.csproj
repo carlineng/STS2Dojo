@@ -17,5 +17,10 @@
         <Compile Include="..\STS2DojoCode\Reconstruction\DojoRunSummary.cs" LinkBase="STS2DojoCode\Reconstruction"/>
         <Compile Include="..\STS2DojoCode\Reconstruction\DojoRunIndexCache.cs" LinkBase="STS2DojoCode\Reconstruction"/>
         <Compile Include="..\STS2DojoCode\Reconstruction\DojoRunListQueries.cs" LinkBase="STS2DojoCode\Reconstruction"/>
+        <Compile Include="..\STS2DojoCode\SeedSharing\DojoFightSnapshot.cs" LinkBase="STS2DojoCode\SeedSharing"/>
+        <Compile Include="..\STS2DojoCode\SeedSharing\SharedFightPayload.cs" LinkBase="STS2DojoCode\SeedSharing"/>
+        <Compile Include="..\STS2DojoCode\SeedSharing\SharedFightCodec.cs" LinkBase="STS2DojoCode\SeedSharing"/>
+        <Compile Include="..\STS2DojoCode\SeedSharing\SharedFightGate.cs" LinkBase="STS2DojoCode\SeedSharing"/>
+        <Compile Include="..\STS2DojoCode\SeedSharing\DojoFightLibrary.cs" LinkBase="STS2DojoCode\SeedSharing"/>
     </ItemGroup>
 </Project>

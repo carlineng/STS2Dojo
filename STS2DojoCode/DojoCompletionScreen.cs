@@ -15,6 +15,7 @@ using MegaCrit.Sts2.Core.Nodes.Multiplayer;
 using MegaCrit.Sts2.Core.Nodes.Screens;
 using MegaCrit.Sts2.Core.Nodes.Screens.ScreenContext;
 using MegaCrit.sts2.Core.Nodes.TopBar;
+using STS2Dojo.STS2DojoCode.SeedSharing;
 
 namespace STS2Dojo.STS2DojoCode;
 
@@ -50,7 +51,9 @@ namespace STS2Dojo.STS2DojoCode;
 public partial class DojoCompletionScreen : NTopBarPortrait, IScreenContext
 {
     private const float PanelWidth = 720f;
-    private const float PanelHeight = 540f;
+    // 540 with three buttons; grew when the §12 Export button made it four (4*82 + 3*14 = 370 of button
+    // stack inside the panel's 118/38 vertical margins).
+    private const float PanelHeight = 620f;
     private const float ButtonWidth = 620f;
     private const float ButtonHeight = 82f;
     private const float ButtonTextHorizontalPadding = 52f;
@@ -61,8 +64,10 @@ public partial class DojoCompletionScreen : NTopBarPortrait, IScreenContext
         typeof(NHoverTipSet).GetField("_activeHoverTips", BindingFlags.NonPublic | BindingFlags.Static);
 
     private DojoCompletionEventOptionButton _tryAgainButton = null!;
+    private DojoCompletionEventOptionButton _exportButton = null!;
     private DojoCompletionEventOptionButton _returnToDojoButton = null!;
     private DojoCompletionEventOptionButton _returnToMainMenuButton = null!;
+    private string? _exportedCode;
     private CanvasItem? _hoverTipsContainerCanvasItem;
     private bool _blockedHoverTips;
     private bool _previousHoverTipsContainerVisible;
@@ -240,11 +245,13 @@ public partial class DojoCompletionScreen : NTopBarPortrait, IScreenContext
         }
 
         _tryAgainButton = CreateEventOptionButton(labelTemplate, "Try Again");
+        _exportButton = CreateEventOptionButton(labelTemplate, "Export Fight Code");
         _returnToDojoButton = CreateEventOptionButton(labelTemplate, "Return to Dojo");
         _returnToMainMenuButton = CreateEventOptionButton(labelTemplate, "Return to Main Menu");
         labelTemplate.QueueFreeSafely();
 
         box.AddChild(_tryAgainButton);
+        box.AddChild(_exportButton);
         box.AddChild(_returnToDojoButton);
         box.AddChild(_returnToMainMenuButton);
         return true;
@@ -253,12 +260,31 @@ public partial class DojoCompletionScreen : NTopBarPortrait, IScreenContext
     private void WireButtons()
     {
         _tryAgainButton.SetText("Try Again");
+        _exportButton.SetText("Export Fight Code");
         _returnToDojoButton.SetText("Return to Dojo");
         _returnToMainMenuButton.SetText("Return to Main Menu");
 
         _tryAgainButton.Released += _ => TaskHelper.RunSafely(OnTryAgain());
+        _exportButton.Released += _ => OnExport();
         _returnToDojoButton.Released += _ => TaskHelper.RunSafely(OnReturnToDojo());
         _returnToMainMenuButton.Released += _ => TaskHelper.RunSafely(OnReturnToMainMenu());
+    }
+
+    /// <summary>§12a entry point 3: packages the snapshot DojoLaunch captured for the attempt that just
+    /// concluded (win or lose) — no recapture. A second press after success just re-copies the code
+    /// instead of writing a duplicate library entry.</summary>
+    private void OnExport()
+    {
+        if (_exportedCode != null)
+        {
+            DisplayServer.ClipboardSet(_exportedCode);
+            _exportButton.SetText("Code Copied Again!");
+            return;
+        }
+
+        SharedFightExporter.ExportResult result = SharedFightExporter.Export(DojoLaunch.LastSnapshot);
+        _exportedCode = result.Code;
+        _exportButton.SetText(result.Message);
     }
 
     private static MegaLabel? TryCreateButtonLabelTemplate()

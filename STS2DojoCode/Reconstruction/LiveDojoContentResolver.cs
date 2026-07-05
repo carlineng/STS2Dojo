@@ -22,6 +22,7 @@ public sealed class LiveDojoContentResolver : IDojoContentResolver
         DojoContentKind.Card => ModelDb.GetByIdOrNull<CardModel>(id) != null,
         DojoContentKind.Relic => ModelDb.GetByIdOrNull<RelicModel>(id) != null,
         DojoContentKind.Potion => ModelDb.GetByIdOrNull<PotionModel>(id) != null,
+        DojoContentKind.Character => ModelDb.GetByIdOrNull<CharacterModel>(id) != null,
         _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, null)
     };
 }
