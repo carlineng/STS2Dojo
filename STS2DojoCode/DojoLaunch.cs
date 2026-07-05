@@ -177,49 +177,44 @@ public static class DojoLaunch
             DojoRunRegistry.MarkAsDojo(runState);
 
             DojoFightSnapshot snapshot;
+            if (!enterScene)
+            {
+                // Prepare-only (§12a entry point 2): NO asset preloads and NO NetLoadingHandle. The async
+                // asset-loading session pops the game's loading overlay, which tears down the modal UI
+                // that initiated the capture (observed in-game 2026-07-04: the Replay Setup modal
+                // vanished back to the Dojo screen mid-export). No scene is ever created here, so the
+                // assets are never needed, and asset loading consumes no run/player/RNG state — capture
+                // parity with a real launch is unaffected. FinalizeStartingRelics IS kept: its
+                // AfterObtained effects are player state the mutate callback's reconstruction snapshot
+                // reads, identical to a real launch.
+                await RunManager.Instance.FinalizeStartingRelics();
+
+                mutate(runState);
+                RestoreRngCounters(options, runState);
+                snapshot = CaptureSnapshot(runState, character, ascensionLevel, encounterId, seed);
+
+                // The snapshot is what the caller wanted; tear the never-entered run back down — same
+                // call the failure path below uses.
+                RunManager.Instance.CleanUp();
+                return (runState, snapshot);
+            }
+
             using (new NetLoadingHandle(RunManager.Instance.NetService))
             {
                 await PreloadManager.LoadRunAssets(runState.Players.Select(p => p.Character));
                 await PreloadManager.LoadActAssets(runState.Acts[0]);
                 await RunManager.Instance.FinalizeStartingRelics();
-                if (enterScene)
-                {
-                    // Fires RunStarted + rich presence only — no run/player/RNG state, so skipping it in
-                    // prepare-only mode costs no capture parity.
-                    RunManager.Instance.Launch();
-                }
+                RunManager.Instance.Launch();
 
                 mutate(runState);
-
-                // Import path (§12e): reconcile the RNG streams to the exporter's exact captured counters.
-                // Requires the run to have been constructed with the payload's seed string (SeedOverride
-                // above) — both LoadFromSerializable methods throw on a seed mismatch by design.
-                if (options.RunRngCounters != null)
-                {
-                    runState.Rng.LoadFromSerializable(options.RunRngCounters);
-                }
-                if (options.PlayerRngCounters != null)
-                {
-                    runState.Players[0].PlayerRng.LoadFromSerializable(options.PlayerRngCounters);
-                }
+                RestoreRngCounters(options, runState);
 
                 // The §12a capture point: post-mutate/post-restore, pre-scene, every combat stream still at
                 // its pre-combat counter. Captured on EVERY launch so any concluded fight can be exported.
                 snapshot = CaptureSnapshot(runState, character, ascensionLevel, encounterId, seed);
+                LastSnapshot = snapshot;
 
-                if (enterScene)
-                {
-                    LastSnapshot = snapshot;
-                    game.RootSceneContainer.SetCurrentScene(NRun.Create(runState));
-                }
-            }
-
-            if (!enterScene)
-            {
-                // Prepare-only (§12a entry point 2): the snapshot is what the caller wanted; tear the
-                // never-entered run back down — same call the failure path below uses.
-                RunManager.Instance.CleanUp();
-                return (runState, snapshot);
+                game.RootSceneContainer.SetCurrentScene(NRun.Create(runState));
             }
 
             await EnterEncounter(encounter);
@@ -242,6 +237,21 @@ public static class DojoLaunch
     public static async Task EnterEncounter(EncounterModel encounter)
     {
         await RunManager.Instance.EnterRoomDebug(encounter.RoomType, MapPointType.Unassigned, encounter);
+    }
+
+    /// <summary>Import path (§12e): reconcile the RNG streams to the exporter's exact captured counters.
+    /// Requires the run to have been constructed with the payload's seed string (SeedOverride) — both
+    /// LoadFromSerializable methods throw on a seed mismatch by design.</summary>
+    private static void RestoreRngCounters(DojoLaunchOptions options, RunState runState)
+    {
+        if (options.RunRngCounters != null)
+        {
+            runState.Rng.LoadFromSerializable(options.RunRngCounters);
+        }
+        if (options.PlayerRngCounters != null)
+        {
+            runState.Players[0].PlayerRng.LoadFromSerializable(options.PlayerRngCounters);
+        }
     }
 
     /// <summary>Reads the shareable-fight snapshot (CLAUDE.md §12b) off the live run state. Uses the same
