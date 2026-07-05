@@ -366,6 +366,9 @@ internal sealed class DojoSavedFightsView
         var column = new VBoxContainer();
         column.AddThemeConstantOverride("separation", 6);
         column.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        // Fill the row's height (driven by the taller action column) so the expanding gaps below can
+        // center the fight-data block between the subtitle and the row's bottom edge.
+        column.SizeFlagsVertical = SizeFlags.ExpandFill;
 
         var titleRow = new HBoxContainer();
         titleRow.AddThemeConstantOverride("separation", 10);
@@ -379,6 +382,10 @@ internal sealed class DojoSavedFightsView
             comment.AutowrapMode = TextServer.AutowrapMode.WordSmart;
             column.AddChild(comment);
         }
+
+        // Equal expanding gaps above and below the fight-data block center it in the space left between
+        // the subtitle and the row's bottom edge (the title/subtitle stay pinned to the top).
+        column.AddChild(MakeVExpander());
 
         string character = payload.CharacterId != null
             ? DojoDisplayNames.Character(payload.CharacterId) : "?";
@@ -402,8 +409,13 @@ internal sealed class DojoSavedFightsView
             $"{payload.Relics.Count} relics · {payload.Potions.Count} potions · Seed {payload.Seed}",
             14, NDojoScreen.MutedText));
 
+        column.AddChild(MakeVExpander());
+
         return column;
     }
+
+    private static Control MakeVExpander() =>
+        new Control { SizeFlagsVertical = SizeFlags.ExpandFill, MouseFilter = Control.MouseFilterEnum.Ignore };
 
     /// <summary>The fight's relic bar — only the relics it carries entering that fight (payload.Relics IS
     /// the captured loadout, i.e. exactly "up until then"). Icons only, wrapped, unresolvable relics skipped
