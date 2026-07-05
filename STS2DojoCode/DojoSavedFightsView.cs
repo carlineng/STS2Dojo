@@ -258,7 +258,8 @@ internal sealed class DojoSavedFightsView
                 text.Append(DojoDisplayNames.Relic(relic.Id)).Append(' ');
             }
         }
-        text.Append(payload.Title).Append(' ').Append(payload.Comment).Append(' ').Append(payload.Seed);
+        text.Append(payload.Title).Append(' ').Append(payload.Comment).Append(' ')
+            .Append(payload.Author).Append(' ').Append(payload.Seed);
         return text.ToString().ToLowerInvariant();
     }
 
@@ -377,7 +378,7 @@ internal sealed class DojoSavedFightsView
 
         columns.AddChild(BuildCharacterColumn(payload));
         columns.AddChild(BuildMonsterAvatar(payload));
-        columns.AddChild(BuildCenterColumn(payload, entry.Origin));
+        columns.AddChild(BuildCenterColumn(payload));
         columns.AddChild(BuildActionsColumn(entry, rowPanel));
 
         return rowPanel;
@@ -479,7 +480,7 @@ internal sealed class DojoSavedFightsView
         }
     }
 
-    private Control BuildCenterColumn(SharedFightPayload payload, SavedFightOrigin origin)
+    private Control BuildCenterColumn(SharedFightPayload payload)
     {
         var column = new VBoxContainer();
         column.AddThemeConstantOverride("separation", 6);
@@ -492,7 +493,10 @@ internal sealed class DojoSavedFightsView
         titleRow.AddThemeConstantOverride("separation", 10);
         column.AddChild(titleRow);
         titleRow.AddChild(DojoUi.MakeLabel(payload.Title, 18, StsColors.cream));
-        titleRow.AddChild(MakeOriginBadge(origin));
+        if (!string.IsNullOrWhiteSpace(payload.Author))
+        {
+            titleRow.AddChild(DojoUi.MakeLabel($"by {payload.Author}", 14, StsColors.gold));
+        }
 
         if (!string.IsNullOrWhiteSpace(payload.Comment))
         {
@@ -686,20 +690,4 @@ internal sealed class DojoSavedFightsView
             });
     }
 
-    private static Control MakeOriginBadge(SavedFightOrigin origin)
-    {
-        bool created = origin == SavedFightOrigin.Created;
-        Label badge = DojoUi.MakeLabel(created ? "BY YOU" : "IMPORTED", 12,
-            created ? StsColors.gold : new Color("7FA8C9"));
-        var frame = new PanelContainer();
-        StyleBoxFlat style = NDojoScreen.MakePanelStyle(
-            new Color("10131A"),
-            created ? StsColors.gold with { A = 0.6f } : new Color("7FA8C9") with { A = 0.6f },
-            6);
-        style.SetContentMarginAll(4);
-        frame.AddThemeStyleboxOverride("panel", style);
-        frame.SizeFlagsVertical = SizeFlags.ShrinkCenter;
-        frame.AddChild(badge);
-        return frame;
-    }
 }

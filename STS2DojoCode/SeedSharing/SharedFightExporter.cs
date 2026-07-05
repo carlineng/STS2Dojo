@@ -1,6 +1,7 @@
 using System;
 using Godot;
 using MegaCrit.Sts2.Core.Debug;
+using MegaCrit.Sts2.Core.Platform;
 
 namespace STS2Dojo.STS2DojoCode.SeedSharing;
 
@@ -23,6 +24,27 @@ public static class SharedFightExporter
     /// <summary>Same source the game stamps into `.run` files as build_id (RunHistoryUtilities).</summary>
     public static string CurrentGameBuildId =>
         ReleaseInfoManager.Instance.ReleaseInfo?.Version ?? "NON-RELEASE-VERSION";
+
+    /// <summary>The local player's platform (Steam) display name, stamped as the fight's author. Empty
+    /// (never throws) if the platform layer isn't available — e.g. a non-Steam/null-platform launch.</summary>
+    public static string CurrentAuthorName
+    {
+        get
+        {
+            try
+            {
+                PlatformType platform = PlatformUtil.PrimaryPlatform;
+                ulong localId = PlatformUtil.GetLocalPlayerId(platform);
+                string name = PlatformUtil.GetPlayerNameRaw(platform, localId);
+                return string.IsNullOrWhiteSpace(name) ? string.Empty : name.Trim();
+            }
+            catch (Exception e)
+            {
+                MainFile.Logger.Info("[STS2Dojo] Could not resolve local player name for fight author: " + e.Message);
+                return string.Empty;
+            }
+        }
+    }
 
     public sealed record ExportResult(bool Success, string Message, string? Code);
 
@@ -87,6 +109,7 @@ public static class SharedFightExporter
             title: DojoDisplayNames.Encounter(snapshot.EncounterId) + " — " +
                    now.ToLocalTime().ToString("yyyy-MM-dd HH:mm"),
             comment: string.Empty,
+            author: CurrentAuthorName,
             createdUtc: now);
     }
 }

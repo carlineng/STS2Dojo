@@ -177,6 +177,7 @@ public static class SharedFightCodec
         writer.WriteString("mod_version", payload.ModVersion);
         writer.WriteString("title", payload.Title);
         writer.WriteString("comment", payload.Comment);
+        writer.WriteString("author", payload.Author);
         // "O" (round-trip) format: preserves ticks and DateTimeKind exactly, culture-independent.
         writer.WriteString("created_utc", payload.CreatedUtc.ToString("O", CultureInfo.InvariantCulture));
         WriteModelId(writer, "character", payload.CharacterId);
@@ -355,6 +356,7 @@ public static class SharedFightCodec
             ModVersion = ReadString(root, "mod_version"),
             Title = ReadString(root, "title"),
             Comment = ReadString(root, "comment"),
+            Author = ReadString(root, "author"),
             CharacterId = ReadModelId(root, "character"),
             Ascension = ReadInt(root, "ascension"),
             EncounterId = ReadModelId(root, "encounter"),
