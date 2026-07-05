@@ -57,6 +57,11 @@ public sealed class DojoRunSummary
     public required int DeckCount { get; init; }
     public required int RelicCount { get; init; }
     public required IReadOnlyList<ModelId> RelicIds { get; init; }
+
+    /// <summary>The run's end-of-run deck as card ids (players[0].deck order, duplicates preserved) —
+    /// what the search box matches card names against. Display-only summary data: the View Deck screen
+    /// re-reads the full run file instead (it needs upgrade levels/enchantments, not just ids).</summary>
+    public required IReadOnlyList<ModelId> DeckCardIds { get; init; }
     public required IReadOnlyList<DojoActSummary> Acts { get; init; }
 
     /// <summary>Cached live-content eligibility for compact fight pills, keyed by 1-based global floor.
@@ -137,6 +142,7 @@ public static class DojoRunSummarizer
             DeckCount = player.Deck.Count(),
             RelicCount = player.Relics.Count(),
             RelicIds = player.Relics.Select(r => r.Id).Where(id => id != null).Select(id => id!).ToList(),
+            DeckCardIds = player.Deck.Select(c => c.Id).Where(id => id != null).Select(id => id!).ToList(),
             Acts = ExtractActs(run),
             RunSource = runSource ?? (() => run)
         };

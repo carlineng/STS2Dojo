@@ -93,9 +93,9 @@ public static class DojoRunListQueries
         return MatchesSearch(run, search, resolveName);
     }
 
-    /// <summary>Search scope per the design: character name, boss/elite display names, relic names, and
-    /// seed. Raw encounter/relic ids are also matched so power users can search e.g. "AEONGLASS_BOSS" or
-    /// "RELIC.PANDORAS_BOX".</summary>
+    /// <summary>Search scope per the design: character name, boss/elite display names, relic names, deck
+    /// card names, and seed. Raw encounter/relic/card ids are also matched so power users can search e.g.
+    /// "AEONGLASS_BOSS" or "RELIC.PANDORAS_BOX".</summary>
     private static bool MatchesSearch(DojoRunSummary run, string search, Func<ModelId, string> resolveName)
     {
         if (Contains(run.Seed, search) || Contains(resolveName(run.CharacterId), search))
@@ -120,6 +120,14 @@ public static class DojoRunListQueries
         foreach (ModelId relicId in run.RelicIds)
         {
             if (Contains(resolveName(relicId), search) || Contains(relicId.ToString(), search))
+            {
+                return true;
+            }
+        }
+
+        foreach (ModelId cardId in run.DeckCardIds)
+        {
+            if (Contains(resolveName(cardId), search) || Contains(cardId.ToString(), search))
             {
                 return true;
             }

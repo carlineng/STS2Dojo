@@ -135,6 +135,9 @@ public sealed class CachedDojoRunSummary
     [JsonPropertyName("relic_ids")]
     public List<string> RelicIds { get; set; } = [];
 
+    [JsonPropertyName("deck_card_ids")]
+    public List<string> DeckCardIds { get; set; } = [];
+
     [JsonPropertyName("acts")]
     public List<CachedDojoActSummary> Acts { get; set; } = [];
 }
@@ -184,10 +187,10 @@ public sealed record DojoRunIndexCacheHydration(
 
 public static class DojoRunIndexCache
 {
-    // Bumped 2 -> adds CachedDojoRunSummary.RelicIds. Load() below discards the whole on-disk document on
-    // a version mismatch, forcing every run to be freshly re-summarized (and re-cached) instead of silently
-    // hydrating pre-existing entries with an empty relic list forever.
-    public const int SchemaVersion = 2;
+    // Bumped 3 -> adds CachedDojoRunSummary.DeckCardIds (2 added RelicIds). Load() below discards the
+    // whole on-disk document on a version mismatch, forcing every run to be freshly re-summarized (and
+    // re-cached) instead of silently hydrating pre-existing entries with an empty deck list forever.
+    public const int SchemaVersion = 3;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -404,6 +407,7 @@ public static class DojoRunIndexCache
             DeckCount = summary.DeckCount,
             RelicCount = summary.RelicCount,
             RelicIds = summary.RelicIds.Select(id => id.ToString()).ToList(),
+            DeckCardIds = summary.DeckCardIds.Select(id => id.ToString()).ToList(),
             Acts = summary.Acts.Select(FromAct).ToList()
         };
     }
@@ -432,6 +436,7 @@ public static class DojoRunIndexCache
             DeckCount = cached.DeckCount,
             RelicCount = cached.RelicCount,
             RelicIds = cached.RelicIds.Select(ModelId.Deserialize).ToList(),
+            DeckCardIds = cached.DeckCardIds.Select(ModelId.Deserialize).ToList(),
             Acts = cached.Acts.Select(HydrateAct).ToList(),
             RunSource = runSource
         };
@@ -534,6 +539,7 @@ public static class DojoRunIndexCache
             && left.DeckCount == right.DeckCount
             && left.RelicCount == right.RelicCount
             && left.RelicIds.SequenceEqual(right.RelicIds)
+            && left.DeckCardIds.SequenceEqual(right.DeckCardIds)
             && AreActsEquivalent(left.Acts, right.Acts);
     }
 

@@ -206,6 +206,10 @@ internal static class DojoRunIndexCacheRunner
             expected.RelicIds.Select(id => id.ToString()).ToArray(),
             actual.RelicIds.Select(id => id.ToString()).ToArray(),
             "relic ids");
+        Assert.SequenceEqual(
+            expected.DeckCardIds.Select(id => id.ToString()).ToArray(),
+            actual.DeckCardIds.Select(id => id.ToString()).ToArray(),
+            "deck card ids");
         Assert.Equal(expected.Acts.Count, actual.Acts.Count, "act count");
 
         for (int i = 0; i < expected.Acts.Count; i++)
