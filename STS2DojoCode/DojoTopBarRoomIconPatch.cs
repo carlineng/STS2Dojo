@@ -79,10 +79,30 @@ public static class DojoTopBarRoomIconPatch
         }
     }
 
-    /// <summary>Draws the standard hallway monster-fight icon in place of the blank Antechamber icon for Dojo
-    /// runs. Runs as a postfix so stock <c>UpdateIcon</c> has already resolved (and hidden) the icon; we only
-    /// override the exact blank case (<c>CurrentMapPoint == null</c>, not a victory room). The path is a real
-    /// texture (<c>ui/run_history/monster.png</c>), so no missing-texture red-box placeholder appears.</summary>
+    /// <summary>Draws the standard hallway monster-fight icon as soon as the room-icon node is ready, so a
+    /// freshly created Dojo top bar never renders a frame with the scene's default (blank/missing-texture)
+    /// icon. The Dojo scene is created (<c>NRun.Create</c>) several frames before <c>EnterRoomDebug</c> fires
+    /// <c>RoomEntered → UpdateIcon</c> (see <c>DojoLaunch.LaunchInternal</c>), and unlike a real run the top
+    /// bar is brand-new — so without this the missing-texture red-box placeholder flashes until UpdateIcon
+    /// runs. <c>_Ready</c> has just assigned <c>_roomIcon</c>/<c>_roomIconOutline</c>, and it runs during
+    /// scene creation before the first frame is presented, so setting the icon here closes the gap.</summary>
+    [HarmonyPatch(typeof(NTopBarRoomIcon), "_Ready")]
+    public static class RoomIconReadyPatch
+    {
+        // ReSharper disable once UnusedMember.Global
+        public static void Postfix(NTopBarRoomIcon __instance)
+        {
+            if (DojoRunRegistry.IsCurrentRunDojo())
+            {
+                SetMonsterIcon(__instance);
+            }
+        }
+    }
+
+    /// <summary>Keeps the monster icon in place after stock <c>UpdateIcon</c> runs (which, for the Dojo's
+    /// <c>Unassigned</c> map point, would otherwise hide the icon). Only the true Antechamber state
+    /// (<c>CurrentMapPoint == null</c>, not a victory room) is overridden — anything the stock code gave a
+    /// real icon is left untouched.</summary>
     [HarmonyPatch(typeof(NTopBarRoomIcon), "UpdateIcon")]
     public static class RoomIconTexturePatch
     {
@@ -95,32 +115,35 @@ public static class DojoTopBarRoomIconPatch
             }
 
             var runState = Traverse.Create(__instance).Field("_runState").GetValue<IRunState>();
-            // Only reskin the true Antechamber state; leave anything the stock code gave a real icon untouched.
             if (runState?.CurrentRoom == null || runState.CurrentMapPoint != null || runState.BaseRoom?.IsVictoryRoom == true)
             {
                 return;
             }
 
-            string? iconPath = ImageHelper.GetRoomIconPath(MapPointType.Monster, RoomType.Monster, null);
-            string? outlinePath = ImageHelper.GetRoomIconOutlinePath(MapPointType.Monster, RoomType.Monster, null);
-            if (iconPath == null)
-            {
-                return;
-            }
-
-            ApplyTexture(Traverse.Create(__instance).Field("_roomIcon").GetValue<TextureRect>(), iconPath);
-            ApplyTexture(Traverse.Create(__instance).Field("_roomIconOutline").GetValue<TextureRect>(), outlinePath);
+            SetMonsterIcon(__instance);
         }
+    }
 
-        private static void ApplyTexture(TextureRect? target, string? path)
+    /// <summary>Applies the standard hallway monster-fight icon (the <c>MapPointType.Monster</c> art
+    /// <c>NMapPointHistoryEntry</c> uses) to the room-icon TextureRects. The path is a real preloaded texture,
+    /// so no missing-texture red-box placeholder appears.</summary>
+    private static void SetMonsterIcon(NTopBarRoomIcon instance)
+    {
+        string? iconPath = ImageHelper.GetRoomIconPath(MapPointType.Monster, RoomType.Monster, null);
+        string? outlinePath = ImageHelper.GetRoomIconOutlinePath(MapPointType.Monster, RoomType.Monster, null);
+
+        ApplyTexture(Traverse.Create(instance).Field("_roomIcon").GetValue<TextureRect>(), iconPath);
+        ApplyTexture(Traverse.Create(instance).Field("_roomIconOutline").GetValue<TextureRect>(), outlinePath);
+    }
+
+    private static void ApplyTexture(TextureRect? target, string? path)
+    {
+        if (target == null || path == null)
         {
-            if (target == null || path == null)
-            {
-                return;
-            }
-
-            target.Visible = true;
-            target.Texture = PreloadManager.Cache.GetCompressedTexture2D(path);
+            return;
         }
+
+        target.Visible = true;
+        target.Texture = PreloadManager.Cache.GetCompressedTexture2D(path);
     }
 }
