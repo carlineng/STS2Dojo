@@ -258,7 +258,8 @@ internal sealed class DojoSavedFightsView
                 text.Append(DojoDisplayNames.Relic(relic.Id)).Append(' ');
             }
         }
-        text.Append(payload.Title).Append(' ').Append(payload.Comment).Append(' ').Append(payload.Seed);
+        text.Append(payload.Title).Append(' ').Append(payload.Comment).Append(' ')
+            .Append(payload.Author).Append(' ').Append(payload.Seed);
         return text.ToString().ToLowerInvariant();
     }
 
@@ -493,6 +494,10 @@ internal sealed class DojoSavedFightsView
         column.AddChild(titleRow);
         titleRow.AddChild(DojoUi.MakeLabel(payload.Title, 18, StsColors.cream));
         titleRow.AddChild(MakeOriginBadge(origin));
+        if (!string.IsNullOrWhiteSpace(payload.Author))
+        {
+            titleRow.AddChild(DojoUi.MakeLabel($"by {payload.Author}", 14, StsColors.gold));
+        }
 
         if (!string.IsNullOrWhiteSpace(payload.Comment))
         {

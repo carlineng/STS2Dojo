@@ -41,6 +41,14 @@ public sealed class SharedFightPayload
     [JsonPropertyName("comment")]
     public string Comment { get; set; } = string.Empty;
 
+    /// <summary>Who exported this fight — the exporter's platform (Steam) display name, stamped once at
+    /// export time and preserved through the payload (an imported fight keeps its original author). Purely
+    /// informational: displayed and searchable, never gated. Empty when the name couldn't be resolved.
+    /// Added as an optional field without a schema bump — the hand-rolled codec defaults it to empty on
+    /// older payloads that predate it, and older builds simply ignore it.</summary>
+    [JsonPropertyName("author")]
+    public string Author { get; set; } = string.Empty;
+
     [JsonPropertyName("created_utc")]
     public DateTime CreatedUtc { get; set; }
 
@@ -89,6 +97,7 @@ public sealed class SharedFightPayload
         string modVersion,
         string title,
         string comment,
+        string author,
         DateTime createdUtc)
     {
         return new SharedFightPayload
@@ -98,6 +107,7 @@ public sealed class SharedFightPayload
             ModVersion = modVersion,
             Title = title,
             Comment = comment,
+            Author = author,
             CreatedUtc = createdUtc,
             CharacterId = snapshot.CharacterId,
             Ascension = snapshot.Ascension,

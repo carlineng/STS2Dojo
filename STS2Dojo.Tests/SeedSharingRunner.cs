@@ -98,6 +98,7 @@ internal static class SeedSharingRunner
         modVersion: "0.1.0",
         title: "Decimillipede practice",
         comment: "watch the back segment",
+        author: "SpireFan42",
         createdUtc: SampleCreatedUtc);
 
     private static void SnapshotToPayloadMapping()
@@ -108,6 +109,7 @@ internal static class SeedSharingRunner
         Assert.Equal("v0.107.1", payload.GameBuildId, "game build");
         Assert.Equal("0.1.0", payload.ModVersion, "mod version");
         Assert.Equal("Decimillipede practice", payload.Title, "title");
+        Assert.Equal("SpireFan42", payload.Author, "author");
         Assert.Equal("ABC123XYZ0", payload.Seed, "seed");
         Assert.Equal("CHARACTER.SILENT", payload.CharacterId?.ToString(), "character");
         Assert.Equal("ENCOUNTER.DECIMILLIPEDE_ELITE", payload.EncounterId?.ToString(), "encounter");
@@ -124,6 +126,7 @@ internal static class SeedSharingRunner
         // Lock the wire format: snake_case property names, snake_case enum-keyed counter dicts, and the
         // exact SavedProperties field shape real `.run` files use.
         Assert.True(json.Contains("\"payload_schema_version\""), "snake_case payload fields");
+        Assert.True(json.Contains("\"author\""), "author field present in wire format");
         Assert.True(json.Contains("\"up_front\""), "run rng counter keys are snake_case");
         Assert.True(json.Contains("\"transformations\""), "player rng counter keys are snake_case");
         Assert.True(json.Contains("\"name\": \"IsUsed\"") || json.Contains("\"name\":\"IsUsed\""),
@@ -346,6 +349,7 @@ internal static class SeedSharingRunner
         Assert.Equal(expected.ModVersion, actual.ModVersion, label + " mod version");
         Assert.Equal(expected.Title, actual.Title, label + " title");
         Assert.Equal(expected.Comment, actual.Comment, label + " comment");
+        Assert.Equal(expected.Author, actual.Author, label + " author");
         Assert.Equal(expected.CreatedUtc, actual.CreatedUtc, label + " created");
         Assert.Equal(expected.CharacterId, actual.CharacterId, label + " character");
         Assert.Equal(expected.Ascension, actual.Ascension, label + " ascension");
