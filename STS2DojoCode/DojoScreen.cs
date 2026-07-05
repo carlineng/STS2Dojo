@@ -29,7 +29,7 @@ namespace STS2Dojo.STS2DojoCode;
 
 /// <summary>
 /// The custom Dojo run browser (replaces the first-pass stock-NRunHistory reuse as the Dojo's landing
-/// screen): a left sidebar of live filters (character / ascension / victory / search / sort) over a
+/// screen): a left sidebar of live filters (character / ascension / max act / victory / search / sort) over a
 /// scrolling list of the REAL profile's single-player runs, each row showing the run's stats and a
 /// per-act strip of its boss/elite fights as clickable pills that open the Replay Setup modal
 /// (<see cref="NDojoReplaySetupModal"/>) for that fight.
@@ -64,6 +64,7 @@ public partial class NDojoScreen : NSubmenu
 
     private readonly List<DojoChip> _characterChips = new();
     private readonly List<DojoChip> _ascensionChips = new();
+    private readonly List<DojoChip> _maxActChips = new();
     private readonly List<DojoChip> _victoryChips = new();
     private readonly List<DojoChip> _sortChips = new();
     private readonly List<DojoChip> _modeChips = new();
@@ -86,6 +87,7 @@ public partial class NDojoScreen : NSubmenu
 
     private ModelId? _filterCharacter;
     private int? _filterAscension;
+    private int? _filterMaxAct;
     private DojoVictoryFilter _filterVictory = DojoVictoryFilter.Both;
     private DojoRunSortOrder _sortOrder = DojoRunSortOrder.Newest;
 
@@ -295,6 +297,23 @@ public partial class NDojoScreen : NSubmenu
             int value = ascension;
             AddFilterChip(ascensionGrid, _ascensionChips, value.ToString(), selected: false,
                 () => { _filterAscension = value; RebuildList(); });
+        }
+        filters.AddChild(MakeSpacer(8));
+
+        filters.AddChild(DojoUi.MakeLabel("Max Act", 19, StsColors.cream));
+        var maxActGrid = new HFlowContainer();
+        maxActGrid.AddThemeConstantOverride("h_separation", 8);
+        maxActGrid.AddThemeConstantOverride("v_separation", 8);
+        filters.AddChild(maxActGrid);
+        AddFilterChip(maxActGrid, _maxActChips, "All", selected: true,
+            () => { _filterMaxAct = null; RebuildList(); });
+        // Runs are at most three acts (48 floors = a full three-act run); an exact-match chip on the
+        // deepest reached act, mirroring the Ascension chips above.
+        for (int act = 1; act <= 3; act++)
+        {
+            int value = act;
+            AddFilterChip(maxActGrid, _maxActChips, $"Act {value}", selected: false,
+                () => { _filterMaxAct = value; RebuildList(); });
         }
         filters.AddChild(MakeSpacer(8));
 
@@ -529,10 +548,12 @@ public partial class NDojoScreen : NSubmenu
     {
         _filterCharacter = null;
         _filterAscension = null;
+        _filterMaxAct = null;
         _filterVictory = DojoVictoryFilter.Both;
         _searchBox.Text = string.Empty;
         SelectFirst(_characterChips);
         SelectFirst(_ascensionChips);
+        SelectFirst(_maxActChips);
         SelectFirst(_victoryChips);
         RebuildList();
     }
@@ -619,7 +640,8 @@ public partial class NDojoScreen : NSubmenu
             return;
         }
 
-        var filter = new DojoRunFilter(_filterCharacter, _filterAscension, _filterVictory, _searchBox.Text);
+        var filter = new DojoRunFilter(
+            _filterCharacter, _filterAscension, _filterVictory, _searchBox.Text, _filterMaxAct);
         _visibleRuns = DojoRunListQueries.Apply(_index.Runs, filter, _sortOrder, DojoDisplayNames.ForSearch);
 
         foreach (Node child in _rowContainer.GetChildren())

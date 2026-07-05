@@ -105,6 +105,9 @@ public sealed class CachedDojoRunSummary
     [JsonPropertyName("floors_reached")]
     public int FloorsReached { get; set; }
 
+    [JsonPropertyName("max_act_reached")]
+    public int MaxActReached { get; set; }
+
     [JsonPropertyName("end_hp")]
     public int EndHp { get; set; }
 
@@ -187,10 +190,11 @@ public sealed record DojoRunIndexCacheHydration(
 
 public static class DojoRunIndexCache
 {
-    // Bumped 3 -> adds CachedDojoRunSummary.DeckCardIds (2 added RelicIds). Load() below discards the
-    // whole on-disk document on a version mismatch, forcing every run to be freshly re-summarized (and
-    // re-cached) instead of silently hydrating pre-existing entries with an empty deck list forever.
-    public const int SchemaVersion = 3;
+    // Bumped 4 -> adds CachedDojoRunSummary.MaxActReached (3 added DeckCardIds, 2 added RelicIds). Load()
+    // below discards the whole on-disk document on a version mismatch, forcing every run to be freshly
+    // re-summarized (and re-cached) instead of silently hydrating pre-existing entries with a stale/zero
+    // max-act value forever.
+    public const int SchemaVersion = 4;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -397,6 +401,7 @@ public static class DojoRunIndexCache
             Win = summary.Win,
             WasAbandoned = summary.WasAbandoned,
             FloorsReached = summary.FloorsReached,
+            MaxActReached = summary.MaxActReached,
             EndHp = summary.EndHp,
             EndMaxHp = summary.EndMaxHp,
             StartTime = summary.StartTime,
@@ -426,6 +431,7 @@ public static class DojoRunIndexCache
             Win = cached.Win,
             WasAbandoned = cached.WasAbandoned,
             FloorsReached = cached.FloorsReached,
+            MaxActReached = cached.MaxActReached,
             EndHp = cached.EndHp,
             EndMaxHp = cached.EndMaxHp,
             StartTime = cached.StartTime,

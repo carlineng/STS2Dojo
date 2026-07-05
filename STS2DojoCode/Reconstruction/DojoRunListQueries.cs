@@ -22,14 +22,16 @@ public enum DojoRunSortOrder
 
 /// <summary>
 /// The Dojo run browser's live sidebar filters. All null/empty fields mean "no restriction".
-/// Ascension is an exact match (the sidebar offers All + A0–A10 chips); Defeat includes abandoned runs
-/// (anything that isn't a win).
+/// Ascension is an exact match (the sidebar offers All + A0–A10 chips); MaxAct is an exact match on the
+/// run's deepest reached act (All + Act 1–3 chips); Defeat includes abandoned runs (anything that isn't
+/// a win).
 /// </summary>
 public sealed record DojoRunFilter(
     ModelId? Character = null,
     int? Ascension = null,
     DojoVictoryFilter Victory = DojoVictoryFilter.Both,
-    string? SearchText = null)
+    string? SearchText = null,
+    int? MaxAct = null)
 {
     public static readonly DojoRunFilter None = new();
 }
@@ -73,6 +75,11 @@ public static class DojoRunListQueries
         }
 
         if (filter.Ascension.HasValue && run.Ascension != filter.Ascension.Value)
+        {
+            return false;
+        }
+
+        if (filter.MaxAct.HasValue && run.MaxActReached != filter.MaxAct.Value)
         {
             return false;
         }

@@ -34,11 +34,12 @@ internal static class DojoRunBrowserLogicRunner
         Run("per-act boss/elite extraction", PerActExtraction);
         Run("death-fight marking", DeathFightMarking);
         Run("filtering", Filtering);
+        Run("max act filter", MaxActFilter);
         Run("search", Search);
         Run("sorting", Sorting);
 
         Console.WriteLine();
-        Console.WriteLine("6 Dojo run-browser logic test groups passed.");
+        Console.WriteLine("7 Dojo run-browser logic test groups passed.");
     }
 
     private static void Run(string name, Action test)
@@ -54,6 +55,7 @@ internal static class DojoRunBrowserLogicRunner
         Assert.Equal(10, win.Ascension, "ascension");
         Assert.True(win.Win && !win.WasAbandoned, "win flags");
         Assert.Equal(49, win.FloorsReached, "floors reached");
+        Assert.Equal(3, win.MaxActReached, "max act reached (full three-act run)");
         Assert.Equal(69, win.EndHp, "end hp");
         Assert.Equal(96, win.EndMaxHp, "end max hp");
         Assert.Equal("RRFV94VJEW", win.Seed, "seed");
@@ -67,6 +69,7 @@ internal static class DojoRunBrowserLogicRunner
         DojoRunSummary loss = Summarize("1779595721.run");
         Assert.True(!loss.Win, "loss flag");
         Assert.Equal(25, loss.FloorsReached, "loss floors reached");
+        Assert.Equal(2, loss.MaxActReached, "max act reached (died in act 2)");
         Assert.Equal(0, loss.EndHp, "loss end hp");
         Assert.Equal(70, loss.EndMaxHp, "loss end max hp");
     }
@@ -240,6 +243,24 @@ internal static class DojoRunBrowserLogicRunner
                 Victory: DojoVictoryFilter.Defeat),
             DojoRunSortOrder.Newest, ResolveName);
         Assert.SequenceEqual(["1782696823.run"], FileNames(combined), "combined filters");
+    }
+
+    private static void MaxActFilter()
+    {
+        List<DojoRunSummary> runs = AllRuns();
+
+        // Only the act-2 death matches Act 2; both full three-act runs match Act 3; nothing died in act 1.
+        Assert.SequenceEqual(["1779595721.run"],
+            FileNames(Apply(runs, new DojoRunFilter(MaxAct: 2))), "max act 2 filter");
+        List<DojoRunSummary> act3 = Apply(runs, new DojoRunFilter(MaxAct: 3));
+        Assert.Equal(2, act3.Count, "max act 3 filter count");
+        Assert.True(act3.All(r => r.MaxActReached == 3), "max act 3 filter members reached act 3");
+        Assert.Equal(0, Apply(runs, new DojoRunFilter(MaxAct: 1)).Count, "max act 1 filter excludes all");
+
+        // Combines with other filters: the act-3 defeat is the Defect run.
+        Assert.SequenceEqual(["1782696823.run"],
+            FileNames(Apply(runs, new DojoRunFilter(MaxAct: 3, Victory: DojoVictoryFilter.Defeat))),
+            "max act + victory combined");
     }
 
     private static void Search()
