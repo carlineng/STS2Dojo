@@ -21,7 +21,8 @@ internal static class DojoRunBrowserLogicRunner
         ["ENCOUNTER.AEONGLASS_BOSS"] = "Aeon Glass",
         ["ENCOUNTER.TERROR_EEL_ELITE"] = "Terror Eel",
         ["ENCOUNTER.DECIMILLIPEDE_ELITE"] = "Decimillipede",
-        ["RELIC.GREMLIN_HORN"] = "Gremlin Horn"
+        ["RELIC.GREMLIN_HORN"] = "Gremlin Horn",
+        ["CARD.FOOTWORK"] = "Footwork"
     };
 
     private static string ResolveName(ModelId id) =>
@@ -60,6 +61,8 @@ internal static class DojoRunBrowserLogicRunner
         Assert.Equal(2955f, win.RunTimeSeconds, "run time");
         Assert.Equal(38, win.DeckCount, "deck count");
         Assert.Equal(19, win.RelicCount, "relic count");
+        Assert.Equal(38, win.DeckCardIds.Count, "deck card ids cover the whole deck");
+        Assert.True(win.DeckCardIds.Any(id => id.ToString() == "CARD.WHIRLWIND"), "deck card ids content");
 
         DojoRunSummary loss = Summarize("1779595721.run");
         Assert.True(!loss.Win, "loss flag");
@@ -259,6 +262,14 @@ internal static class DojoRunBrowserLogicRunner
             FileNames(Apply(runs, new DojoRunFilter(SearchText: "gremlin"))), "relic display-name search");
         Assert.SequenceEqual(["1779595721.run"],
             FileNames(Apply(runs, new DojoRunFilter(SearchText: "RELIC.GREMLIN_HORN"))), "raw relic-id search");
+        // Deck-card search: Footwork ended only the Silent loss's deck; Whirlwind only the Ironclad win's.
+        Assert.SequenceEqual(["1779595721.run"],
+            FileNames(Apply(runs, new DojoRunFilter(SearchText: "footwork"))), "card display-name search");
+        Assert.SequenceEqual(["1782524433.run"],
+            FileNames(Apply(runs, new DojoRunFilter(SearchText: "CARD.WHIRLWIND"))), "raw card-id search");
+        // All three fixtures are ascension-10 runs, so every final deck carries Ascender's Bane.
+        Assert.Equal(3, Apply(runs, new DojoRunFilter(SearchText: "ASCENDERS_BANE")).Count,
+            "card carried by every deck");
         Assert.Equal(0, Apply(runs, new DojoRunFilter(SearchText: "zzz-no-match")).Count, "no-match search");
         Assert.Equal(3, Apply(runs, new DojoRunFilter(SearchText: "   ")).Count, "blank search matches all");
     }

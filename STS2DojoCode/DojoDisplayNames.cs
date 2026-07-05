@@ -22,6 +22,7 @@ public static class DojoDisplayNames
     private static readonly Dictionary<ModelId, string> ActNames = new();
     private static readonly Dictionary<ModelId, string> MonsterNames = new();
     private static readonly Dictionary<ModelId, string> RelicNames = new();
+    private static readonly Dictionary<ModelId, string> CardNames = new();
 
     public static string Character(ModelId id) =>
         Resolve(CharacterNames, id, i => ModelDb.GetByIdOrNull<CharacterModel>(i)?.Title.GetFormattedText());
@@ -38,8 +39,11 @@ public static class DojoDisplayNames
     public static string Relic(ModelId id) =>
         Resolve(RelicNames, id, i => ModelDb.GetByIdOrNull<RelicModel>(i)?.Title.GetFormattedText());
 
+    public static string Card(ModelId id) =>
+        Resolve(CardNames, id, i => ModelDb.GetByIdOrNull<CardModel>(i)?.Title);
+
     /// <summary>The search resolver handed to DojoRunListQueries: dispatches on the id's category so one
-    /// delegate covers characters, encounters, acts, monster, and relic labels.</summary>
+    /// delegate covers characters, encounters, acts, monster, relic, and card labels.</summary>
     public static string ForSearch(ModelId id) => id.Category switch
     {
         "CHARACTER" => Character(id),
@@ -47,6 +51,7 @@ public static class DojoDisplayNames
         "ACT" => Act(id),
         "MONSTER" => Monster(id),
         "RELIC" => Relic(id),
+        "CARD" => Card(id),
         _ => Prettify(id.Entry)
     };
 

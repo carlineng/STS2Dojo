@@ -240,7 +240,7 @@ public partial class NDojoScreen : NSubmenu
         VBoxContainer filters = _runsFilterSection;
 
         _searchBox = new LineEdit();
-        _searchBox.PlaceholderText = "Search character, boss, relic, seed...";
+        _searchBox.PlaceholderText = "Search character, fight, relic, or card";
         _searchBox.ClearButtonEnabled = true;
         _searchBox.CustomMinimumSize = new Vector2(0, 46);
         _searchBox.AddThemeStyleboxOverride("normal", MakePanelStyle(new Color("10131A"), RowBorderColor, 8));
@@ -1210,7 +1210,29 @@ public sealed class DojoRunRow
         toggle.SizeFlagsHorizontal = SizeFlags.ShrinkEnd;
         meta.AddChild(toggle);
 
+        DojoChip viewDeck = DojoUi.MakeChip("View Deck", compact: true);
+        viewDeck.SizeFlagsHorizontal = SizeFlags.ShrinkEnd;
+        viewDeck.Released += _ => OpenDeckViewer();
+        meta.AddChild(viewDeck);
+
         return meta;
+    }
+
+    /// <summary>Opens the stock deck-view screen on this run's end-of-run deck (players[0].deck from the
+    /// full run file — upgrade levels/enchantments included, unlike the summary's id-only search list).</summary>
+    private void OpenDeckViewer()
+    {
+        RunHistory? history = History();
+        if (history == null)
+        {
+            MainFile.Logger.Info($"[STS2Dojo] View Deck: run file '{_run.FilePath}' could not be read.");
+            return;
+        }
+
+        if (!DojoDeckViewer.TryOpen(_run.CharacterId, history.Players[0].Deck, out string? error))
+        {
+            MainFile.Logger.Info("[STS2Dojo] View Deck: " + error);
+        }
     }
 
     private static Label RightLabel(string text, int size, Color color)

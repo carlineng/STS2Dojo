@@ -237,8 +237,8 @@ internal sealed class DojoSavedFightsView
         return query.Length == 0 || loaded.Haystack.Contains(query);
     }
 
-    /// <summary>The lowercased searchable text for one fight — character/enemy/relic names plus title,
-    /// comment and seed (matching the run browser's search surface). Precomputed at load time so a
+    /// <summary>The lowercased searchable text for one fight — character/enemy/relic/deck-card names plus
+    /// title, comment and seed (matching the run browser's search surface). Precomputed at load time so a
     /// per-keystroke filter never re-resolves display names.</summary>
     private static string BuildHaystack(SharedFightPayload payload)
     {
@@ -256,6 +256,13 @@ internal sealed class DojoSavedFightsView
             if (relic?.Id != null)
             {
                 text.Append(DojoDisplayNames.Relic(relic.Id)).Append(' ');
+            }
+        }
+        foreach (SerializableCard card in payload.Deck)
+        {
+            if (card?.Id != null)
+            {
+                text.Append(DojoDisplayNames.Card(card.Id)).Append(' ');
             }
         }
         text.Append(payload.Title).Append(' ').Append(payload.Comment).Append(' ')
@@ -607,6 +614,18 @@ internal sealed class DojoSavedFightsView
             refusalLabel.CustomMinimumSize = new Vector2(150, 0);
             actions.AddChild(refusalLabel);
         }
+
+        DojoChip viewDeck = DojoUi.MakeChip("View Deck", compact: true);
+        viewDeck.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        viewDeck.Released += _ =>
+        {
+            // The fight's captured deck — the deck "up to that point" — is payload.Deck itself.
+            if (!DojoDeckViewer.TryOpen(payload.CharacterId, payload.Deck, out string? error))
+            {
+                SetStatus(error ?? "Could not open the deck viewer.", isError: true);
+            }
+        };
+        actions.AddChild(viewDeck);
 
         DojoChip copy = DojoUi.MakeChip("Copy Code", compact: true);
         copy.SizeFlagsHorizontal = SizeFlags.ExpandFill;
