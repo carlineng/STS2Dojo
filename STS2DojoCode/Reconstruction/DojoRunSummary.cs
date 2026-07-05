@@ -47,6 +47,12 @@ public sealed class DojoRunSummary
     public required bool Win { get; init; }
     public required bool WasAbandoned { get; init; }
     public required int FloorsReached { get; init; }
+
+    /// <summary>The deepest act the run reached, 1-based: the number of acts with at least one visited
+    /// floor (a run that died in act 2 is 2; a full three-act run is 3). Backs the sidebar's Max Act
+    /// filter. Counts non-empty acts rather than <c>map_point_history.Count</c> so a trailing pre-allocated
+    /// empty act would never inflate it.</summary>
+    public required int MaxActReached { get; init; }
     public required int EndHp { get; init; }
     public required int EndMaxHp { get; init; }
     public required long StartTime { get; init; }
@@ -132,6 +138,7 @@ public static class DojoRunSummarizer
             Win = run.Win,
             WasAbandoned = run.WasAbandoned,
             FloorsReached = run.MapPointHistory.Sum(act => act.Count),
+            MaxActReached = run.MapPointHistory.Count(act => act.Count > 0),
             EndHp = endHp,
             EndMaxHp = endMaxHp,
             StartTime = run.StartTime,

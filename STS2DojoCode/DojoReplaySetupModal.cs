@@ -159,6 +159,7 @@ public partial class NDojoReplaySetupModal : NTopBarPortrait, IScreenContext
         content.AddChild(BuildSummaryStrip(preview));
         content.AddChild(MakeExplainer());
         content.AddChild(BuildStateScroll(relicRows, cardRows));
+        content.AddChild(BuildShareRow());
         content.AddChild(BuildActionBar(buttonSize));
 
         return true;
@@ -166,10 +167,10 @@ public partial class NDojoReplaySetupModal : NTopBarPortrait, IScreenContext
 
     private static float ComputePanelHeight(int relicRows, int cardRows, float buttonHeight)
     {
-        // Fixed chrome: top margin + rule + summary strip + explainer + action bar + bottom margin +
-        // VBox separations. Rows: header + row heights per section. Clamped so long lists scroll
-        // internally while short ones don't leave a cavern of empty stone.
-        float chrome = 98 + 14 + 96 + 26 + Math.Max(buttonHeight, 96f) + 30 + 60;
+        // Fixed chrome: top margin + rule + summary strip + explainer + share row (section header + chip
+        // row) + action bar + bottom margin + VBox separations. Rows: header + row heights per section.
+        // Clamped so long lists scroll internally while short ones don't leave a cavern of empty stone.
+        float chrome = 98 + 14 + 96 + 26 + 55 + Math.Max(buttonHeight, 96f) + 30 + 72;
         float rows = 34 + Math.Max(relicRows, 1) * 102;
         if (cardRows > 0)
         {
@@ -729,6 +730,39 @@ public partial class NDojoReplaySetupModal : NTopBarPortrait, IScreenContext
 
     // ------------------------------------------------------------------ actions
 
+    /// <summary>The "EXPORT THIS FIGHT" strip (§12a entry point 2 — capture-and-export without playing).
+    /// A section header matching RELIC STATE / CARD STATE, then the two capture chips left-aligned: copy
+    /// the share code, or save it to the Saved Fights library. Deliberately lifted out of the action bar
+    /// so that bar stays a clean Cancel &lt;-&gt; Start Replay decision and these chips no longer read as the
+    /// relic-row Zero/Random/Primed presets they share the <see cref="DojoPresetChip"/> widget with.
+    /// Preset-chips (not NPopupYesNoButtons) on purpose — IsYes wiring re-registers confirm/cancel
+    /// hotkeys, and these must never steal ESC/confirm from Cancel/Start.</summary>
+    private Control BuildShareRow()
+    {
+        var section = new VBoxContainer();
+        section.AddThemeConstantOverride("separation", 8);
+        section.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+
+        section.AddChild(MakeSectionHeader("EXPORT THIS FIGHT"));
+
+        var chips = new HBoxContainer();
+        chips.AddThemeConstantOverride("separation", 8);
+        chips.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+
+        _copyChip = new DojoPresetChip();
+        _copyChip.Configure("Copy Code");
+        _copyChipLabel = _copyChip.GetChildren().OfType<Label>().FirstOrDefault();
+        chips.AddChild(_copyChip);
+
+        _saveChip = new DojoPresetChip();
+        _saveChip.Configure("Save Fight");
+        _saveChipLabel = _saveChip.GetChildren().OfType<Label>().FirstOrDefault();
+        chips.AddChild(_saveChip);
+
+        section.AddChild(chips);
+        return section;
+    }
+
     private Control BuildActionBar(Vector2 buttonSize)
     {
         var bar = new HBoxContainer();
@@ -744,29 +778,6 @@ public partial class NDojoReplaySetupModal : NTopBarPortrait, IScreenContext
         var spacer = new Control();
         spacer.SizeFlagsHorizontal = SizeFlags.ExpandFill;
         bar.AddChild(spacer);
-
-        // §12a entry point 2: capture-and-export without playing, offered as two choices — copy the share
-        // code, or save it to the Saved Fights library. Preset-chips (not NPopupYesNoButtons) on purpose —
-        // IsYes wiring re-registers confirm/cancel hotkeys, and these must never steal ESC/confirm from
-        // Cancel/Start.
-        var exportGroup = new HBoxContainer();
-        exportGroup.AddThemeConstantOverride("separation", 8);
-        exportGroup.SizeFlagsVertical = SizeFlags.ShrinkCenter;
-
-        _copyChip = new DojoPresetChip();
-        _copyChip.Configure("Copy Code");
-        _copyChipLabel = _copyChip.GetChildren().OfType<Label>().FirstOrDefault();
-        exportGroup.AddChild(_copyChip);
-
-        _saveChip = new DojoPresetChip();
-        _saveChip.Configure("Save Fight");
-        _saveChipLabel = _saveChip.GetChildren().OfType<Label>().FirstOrDefault();
-        exportGroup.AddChild(_saveChip);
-        bar.AddChild(exportGroup);
-
-        var spacer2 = new Control();
-        spacer2.SizeFlagsHorizontal = SizeFlags.ExpandFill;
-        bar.AddChild(spacer2);
 
         _startButton!.CustomMinimumSize = buttonSize;
         _startButton.SizeFlagsHorizontal = SizeFlags.ShrinkEnd;
