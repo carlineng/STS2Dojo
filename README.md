@@ -62,3 +62,13 @@ A `Makefile` wraps these as `make deploy` / `make build` / `make test`. The buil
 > Some reconstruction tests read local `.run` history fixtures that are **not** committed to this repo (they're personal game data). Those fixtures need to be present locally for the full test suite to pass.
 
 To try changes in-game, launch Slay the Spire 2 through Steam with the mod enabled (a direct launch of the `.app` can crash in Sentry). Rebuild and relaunch to pick up a new build.
+
+---
+
+## License
+
+STS2 Dojo is released under the [MIT License](LICENSE) — © 2026 carlineng. The MIT license covers this mod's own source code only.
+
+## Disclaimer
+
+Unofficial fan mod. *Slay the Spire 2* is a trademark of Mega Crit; this project is not affiliated with, sponsored by, or endorsed by Mega Crit. It contains no *Slay the Spire 2* game assets or code — it only references the game's own modding API at runtime. All game content and trademarks belong to their respective owners.
