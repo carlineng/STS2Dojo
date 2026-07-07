@@ -22,5 +22,6 @@
         <Compile Include="..\STS2DojoCode\SeedSharing\SharedFightCodec.cs" LinkBase="STS2DojoCode\SeedSharing"/>
         <Compile Include="..\STS2DojoCode\SeedSharing\SharedFightGate.cs" LinkBase="STS2DojoCode\SeedSharing"/>
         <Compile Include="..\STS2DojoCode\SeedSharing\DojoFightLibrary.cs" LinkBase="STS2DojoCode\SeedSharing"/>
+        <Compile Include="..\STS2DojoCode\SeedSharing\SavedFightCustomization.cs" LinkBase="STS2DojoCode\SeedSharing"/>
     </ItemGroup>
 </Project>
