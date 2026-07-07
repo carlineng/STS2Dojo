@@ -48,6 +48,23 @@ public static class RunReconstructor
         ["RELIC.PHIAL_HOLSTER"] = 1
     };
 
+    /// <summary>
+    /// Cards whose [SavedProperty] state is immutable *identity* chosen at acquisition — NOT a per-combat
+    /// counter. The per-floor deltas the forward-replay walks (cards_gained) carry only a bare id, and
+    /// StampFloor deliberately drops Props, so without a backfill these cards are rebuilt at their type
+    /// default. For Mad Science that default is CardType.None: the card renders as "?????" and its OnPlay
+    /// switch hits `default: throw`, freezing the card mid-play (the bug this set fixes). Its TinkerTime
+    /// type/rider are set once at the Tinker Time event and never change, so the end-of-run deck snapshot's
+    /// value is exactly the value the card had entering any earlier fight — safe to copy back verbatim.
+    ///
+    /// Deliberately excludes the four *scaling* stateful cards (Genetic Algorithm, The Scythe, Guilty,
+    /// Spoils Map): their counters legitimately grow over the run, so the end-of-run value is wrong for an
+    /// earlier floor, AND their type default is already functional (no crash). The scaling ones are instead
+    /// exposed as editable `assumed` state in the Replay Setup modal (§5n). This is an id allowlist, not a
+    /// blanket "copy all final props," precisely to keep those four off it.
+    /// </summary>
+    private static readonly HashSet<string> IdentityPropCardIds = new() { "CARD.MAD_SCIENCE" };
+
     public static ReconstructedLoadout Reconstruct(
         RunHistory run,
         int globalFloor,
@@ -205,6 +222,8 @@ public static class RunReconstructor
             }
         }
 
+        RestoreIdentityProps(deck, finalPlayer.Deck);
+
         return new ReconstructedLoadout
         {
             CharacterId = finalPlayer.Character,
@@ -234,6 +253,52 @@ public static class RunReconstructor
         Enchantment = card.Enchantment,
         FloorAddedToDeck = card.FloorAddedToDeck ?? floorIdx
     };
+
+    /// <summary>
+    /// Backfills identity-prop cards (see <see cref="IdentityPropCardIds"/>) in the forward-replayed deck
+    /// from the run's end-of-run deck snapshot (<c>players[0].deck</c>), the only place those props are
+    /// logged. Matches a reconstructed instance to a snapshot instance by (id, floor_added_to_deck), falling
+    /// back to id-only if the floor doesn't line up (e.g. a duplicated copy). Only fills a card whose Props
+    /// are currently null so a deliberately-empty prop set is never clobbered, and only for allowlisted ids
+    /// so scaling cards are untouched. A card that was removed before end-of-run won't appear in the snapshot
+    /// and is left as-is (an accepted, rare gap — recovering it would require replaying the Tinker Time event).
+    /// </summary>
+    private static void RestoreIdentityProps(List<ProvenancedCard> deck, IEnumerable<SerializableCard> finalDeck)
+    {
+        List<SerializableCard> finalIdentityCards = finalDeck
+            .Where(c => c.Id != null && c.Props != null && IdentityPropCardIds.Contains(c.Id.ToString()!))
+            .ToList();
+        if (finalIdentityCards.Count == 0)
+        {
+            return;
+        }
+
+        for (int i = 0; i < deck.Count; i++)
+        {
+            SerializableCard card = deck[i].Card;
+            if (card.Id == null || card.Props != null || !IdentityPropCardIds.Contains(card.Id.ToString()!))
+            {
+                continue;
+            }
+
+            SerializableCard? match =
+                finalIdentityCards.FirstOrDefault(fc => fc.Id == card.Id && fc.FloorAddedToDeck == card.FloorAddedToDeck)
+                ?? finalIdentityCards.FirstOrDefault(fc => fc.Id == card.Id);
+            if (match == null)
+            {
+                continue;
+            }
+
+            deck[i] = new ProvenancedCard(new SerializableCard
+            {
+                Id = card.Id,
+                CurrentUpgradeLevel = card.CurrentUpgradeLevel,
+                Enchantment = card.Enchantment,
+                Props = match.Props,
+                FloorAddedToDeck = card.FloorAddedToDeck
+            }, deck[i].Provenance);
+        }
+    }
 
     private static int FindCardIndex(List<ProvenancedCard> deck, SerializableCard target)
     {
