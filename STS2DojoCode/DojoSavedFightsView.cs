@@ -603,7 +603,9 @@ internal sealed class DojoSavedFightsView
             replay.Released += _ =>
             {
                 ClearHighlight();
-                TaskHelper.RunSafely(SharedFightLauncher.Launch(payload));
+                // Opens the pre-launch modal (exact replay by default; opt-in seed/state customization)
+                // instead of launching the captured payload directly.
+                DojoSavedFightReplayModal.Open(payload);
             };
             actions.AddChild(replay);
         }
