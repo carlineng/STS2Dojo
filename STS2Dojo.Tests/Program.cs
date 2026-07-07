@@ -137,6 +137,7 @@ TestRunner.Run(
         RequiredCards: ["CARD.ASCENDERS_BANE", "CARD.CLAW", "CARD.GLACIER"],
         RequiredRelics: ["RELIC.CRACKED_CORE", "RELIC.WAR_PAINT"]));
 
+IdentityPropRecoveryRunner.Run();
 DecisionTestRunner.Run();
 PotionReconstructionAcceptanceRunner.Run();
 DojoRunBrowserLogicRunner.Run();
@@ -160,6 +161,42 @@ internal sealed record ReconstructorFixture(
     string[]? RequiredRelics = null,
     string[]? ForbiddenCards = null,
     string[]? ForbiddenRelics = null);
+
+/// <summary>
+/// Regression coverage for the Mad Science ("Tinker Time" event card) freeze bug: the reconstructor
+/// forward-replays the deck from bare-id per-floor deltas and drops Props, so the card's identity
+/// [SavedProperty]s (TinkerTimeType/TinkerTimeRider) default to CardType.None — the card renders as
+/// "?????" and its OnPlay switch throws, freezing it mid-play. RunReconstructor now backfills those
+/// props from the end-of-run deck snapshot. See RunReconstructor.IdentityPropCardIds.
+/// </summary>
+internal static class IdentityPropRecoveryRunner
+{
+    public static void Run()
+    {
+        // 1781843292.run: Silent A10, Mad Science acquired on floor 38 with TinkerTimeType=3 (Power),
+        // TinkerTimeRider=7 (Expertise). Reconstructing the floor-50 boss must carry those props forward.
+        string runPath = Path.Combine(TestRunner.FindRepoRoot(), "runfiles", "1781843292.run");
+        RunHistory run = TestRunHistoryLoader.Load(runPath);
+        StartingLoadout starting = StartingLoadout.ForCharacter(run.Players.Single().Character.ToString(), run.Ascension);
+
+        ReconstructedLoadout loadout = RunReconstructor.Reconstruct(
+            run, 50, starting.Deck, starting.Relics, starting.Hp, starting.Gold);
+
+        ProvenancedCard madScience = loadout.Deck.Single(c => c.Card.Id?.ToString() == "CARD.MAD_SCIENCE");
+        Assert.True(madScience.Card.Props != null, "Mad Science must have props backfilled");
+        Assert.True(madScience.Card.Props!.ints != null, "Mad Science props must carry ints");
+
+        int tinkerType = madScience.Card.Props.ints!.Single(p => p.name == "TinkerTimeType").value;
+        int tinkerRider = madScience.Card.Props.ints!.Single(p => p.name == "TinkerTimeRider").value;
+        Assert.Equal(3, tinkerType, "Mad Science TinkerTimeType (Power)");
+        Assert.Equal(7, tinkerRider, "Mad Science TinkerTimeRider (Expertise)");
+
+        Console.WriteLine("PASS Mad Science identity props recovered from final snapshot");
+        Console.WriteLine();
+        Console.WriteLine("1 identity-prop recovery test passed.");
+        Console.WriteLine();
+    }
+}
 
 internal static class TestRunner
 {
@@ -571,7 +608,11 @@ internal static class TestRunHistoryLoader
 {
     private static readonly JsonSerializerOptions Options = new()
     {
-        PropertyNameCaseInsensitive = true
+        PropertyNameCaseInsensitive = true,
+        // The real game codec (and SavedProperties itself) round-trips its public FIELDS, so the harness
+        // must too — otherwise card/relic Props deserialize with all-null field lists. Needed since the
+        // identity-prop recovery test began reading SavedProperties.ints off the final deck snapshot.
+        IncludeFields = true
     };
 
     public static RunHistory Load(string path) =>
